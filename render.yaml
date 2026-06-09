@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: openai-pay-long-link
+    runtime: docker
+    repo: https://github.com/YOUR_USERNAME/openai-pay-long-link
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 8787
+      - key: PYTHONDONTWRITEBYTECODE
+        value: "1"
+      - key: PYTHONUNBUFFERED
+        value: "1"

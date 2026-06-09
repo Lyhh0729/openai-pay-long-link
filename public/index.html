@@ -1,0 +1,1399 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>本地 PP 链提取器</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f8fb;
+        --panel: #ffffff;
+        --panel-soft: #f8fafc;
+        --ink: #111827;
+        --muted: #64748b;
+        --muted-strong: #475569;
+        --line: #d8e0ea;
+        --line-strong: #c5d0df;
+        --accent: #2563eb;
+        --accent-dark: #1d4ed8;
+        --accent-soft: #eff6ff;
+        --success: #059669;
+        --success-soft: #ecfdf5;
+        --danger: #dc2626;
+        --danger-soft: #fef2f2;
+        --warning: #d97706;
+        --terminal: #0f172a;
+        --terminal-line: #263449;
+        --terminal-text: #dbeafe;
+        --radius: 8px;
+        --shadow: 0 20px 48px rgba(15, 23, 42, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          "Aptos", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Microsoft YaHei", sans-serif;
+      }
+
+      main {
+        width: min(1560px, calc(100vw - 44px));
+        margin: 0 auto;
+        padding: 22px 0 54px;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 54px;
+        margin-bottom: 20px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 22px;
+        line-height: 1.25;
+        letter-spacing: 0;
+      }
+
+      p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 7px;
+        color: var(--muted-strong);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0;
+      }
+
+      textarea,
+      input,
+      select {
+        width: 100%;
+        min-height: 40px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #fff;
+        color: var(--ink);
+        font: inherit;
+        font-size: 14px;
+        padding: 9px 11px;
+        outline: none;
+        transition:
+          border-color 150ms ease,
+          box-shadow 150ms ease,
+          background 150ms ease;
+      }
+
+      textarea {
+        min-height: 150px;
+        resize: vertical;
+        font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      textarea:focus,
+      input:focus,
+      select:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+      }
+
+      button,
+      a.button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 40px;
+        white-space: nowrap;
+        border: 1px solid transparent;
+        border-radius: var(--radius);
+        padding: 0 14px;
+        background: var(--accent);
+        color: #fff;
+        font: inherit;
+        font-size: 14px;
+        font-weight: 750;
+        text-decoration: none;
+        cursor: pointer;
+        box-shadow: 0 10px 22px rgba(37, 99, 235, 0.18);
+        transition:
+          transform 140ms ease,
+          background 140ms ease,
+          border-color 140ms ease;
+      }
+
+      button:hover,
+      a.button:hover {
+        background: var(--accent-dark);
+        transform: translateY(-1px);
+      }
+
+      button:active,
+      a.button:active {
+        transform: translateY(0);
+      }
+
+      button.secondary,
+      a.button.secondary {
+        border-color: var(--line);
+        background: #fff;
+        color: var(--ink);
+        box-shadow: none;
+      }
+
+      button.secondary:hover,
+      a.button.secondary:hover {
+        border-color: var(--line-strong);
+        background: var(--panel-soft);
+      }
+
+      a.button.blue {
+        background: var(--accent);
+      }
+
+      a.button.blue:hover {
+        background: var(--accent-dark);
+      }
+
+      button:disabled,
+      a.button.disabled {
+        pointer-events: none;
+        cursor: wait;
+        opacity: 0.58;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .brand-icon {
+        width: 42px;
+        height: 42px;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        background: var(--accent);
+        color: white;
+        box-shadow: 0 12px 24px rgba(37, 99, 235, 0.24);
+        font-size: 23px;
+        font-weight: 900;
+      }
+
+      .version {
+        margin-left: 8px;
+        padding: 4px 9px;
+        border-radius: 7px;
+        background: #eef2f7;
+        color: #4b5563;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .stats {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .stat,
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 34px;
+        padding: 7px 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--panel-soft);
+        color: var(--muted-strong);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .stat.running strong::before {
+        content: "";
+        width: 9px;
+        height: 9px;
+        display: inline-block;
+        margin-right: 8px;
+        border-radius: 999px;
+        background: #10b981;
+        vertical-align: -1px;
+      }
+
+      .stat.success strong {
+        color: var(--success);
+      }
+
+      .stat.danger strong {
+        color: var(--danger);
+      }
+
+      .stat strong {
+        color: var(--ink);
+        font-size: 12px;
+      }
+
+      .stat span {
+        color: var(--muted);
+        font-weight: 600;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(610px, 0.98fr) minmax(560px, 1fr);
+        gap: 22px;
+        align-items: start;
+      }
+
+      .main-column,
+      .side-column {
+        display: grid;
+        gap: 14px;
+        min-width: 0;
+      }
+
+      .side-column {
+        position: sticky;
+        top: 18px;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--panel);
+        box-shadow: 0 18px 42px rgba(15, 23, 42, 0.055);
+      }
+
+      .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 58px;
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .panel-title {
+        margin: 0;
+        font-size: 17px;
+        line-height: 1.25;
+      }
+
+      .panel-note {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .panel-body {
+        padding: 20px;
+      }
+
+      .tool {
+        display: contents;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 22px 26px;
+      }
+
+      .grid.two {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .field {
+        min-width: 0;
+      }
+
+      .field.hidden {
+        display: none;
+      }
+
+      .field.full {
+        grid-column: 1 / -1;
+      }
+
+      details {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--panel-soft);
+      }
+
+      details[open] {
+        background: #fff;
+      }
+
+      summary {
+        cursor: pointer;
+        padding: 12px 14px;
+        color: var(--muted-strong);
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      details .grid {
+        padding: 0 14px 14px;
+      }
+
+      .actions,
+      .result-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .actions {
+        justify-content: space-between;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+      }
+
+      .action-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .status {
+        min-height: 34px;
+        display: inline-flex;
+        align-items: center;
+        max-width: 100%;
+        padding: 7px 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--panel-soft);
+        color: var(--muted-strong);
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+
+      .status.error {
+        border-color: #fecaca;
+        background: var(--danger-soft);
+        color: #991b1b;
+      }
+
+      .proxy-results {
+        display: none;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        width: 100%;
+        margin-top: 12px;
+      }
+
+      .proxy-results.show {
+        display: grid;
+      }
+
+      .proxy-chip {
+        min-height: 34px;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--panel-soft);
+        color: var(--muted-strong);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+
+      .proxy-chip.ok {
+        border-color: #bbf7d0;
+        background: var(--success-soft);
+        color: #166534;
+      }
+
+      .proxy-chip.fail {
+        border-color: #fecaca;
+        background: var(--danger-soft);
+        color: #991b1b;
+      }
+
+      .token-meta {
+        min-height: 20px;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+
+      .log-box {
+        display: grid;
+        align-content: start;
+        gap: 0;
+        min-height: 386px;
+        max-height: 50vh;
+        overflow: auto;
+        padding: 0;
+        border-radius: 0 0 var(--radius) var(--radius);
+        background: var(--terminal);
+        color: var(--terminal-text);
+        font-family: "Cascadia Mono", ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+        font-size: 12.5px;
+        line-height: 1.5;
+      }
+
+      .log-line {
+        display: grid;
+        grid-template-columns: 92px 54px minmax(0, 1fr) 72px 62px 58px;
+        gap: 12px;
+        align-items: start;
+        overflow-wrap: anywhere;
+        padding: 8px 12px;
+        border: 0;
+        border-bottom: 1px solid var(--terminal-line);
+        border-left: 0;
+        border-radius: 0;
+        background: transparent;
+      }
+
+      .log-head {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        color: #cbd5e1;
+        background: #111827;
+        font-weight: 800;
+      }
+
+      .log-level {
+        color: #60a5fa;
+        font-weight: 800;
+      }
+
+      .log-status-ok {
+        color: #34d399;
+        font-weight: 800;
+      }
+
+      .log-status-fail {
+        color: #fb7185;
+        font-weight: 800;
+      }
+
+      .log-line.summary {
+        border-color: rgba(16, 185, 129, 0.34);
+        background: rgba(6, 78, 59, 0.28);
+        color: #d1fae5;
+      }
+
+      .log-line.heartbeat {
+        border-left-color: #94a3b8;
+        color: #cbd5e1;
+        opacity: 0.82;
+      }
+
+      .result {
+        display: none;
+      }
+
+      .result.show {
+        display: grid;
+        gap: 16px;
+      }
+
+      .bottom-bar {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        min-height: 40px;
+        padding: 8px 24px;
+        border-top: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.92);
+        color: var(--muted-strong);
+        backdrop-filter: blur(12px);
+        font-size: 12px;
+      }
+
+      .bottom-bar .left,
+      .bottom-bar .right {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        flex-wrap: wrap;
+      }
+
+      .api-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: #10b981;
+      }
+
+      .result .row {
+        display: grid;
+        gap: 6px;
+      }
+
+      .result.empty .row {
+        display: none;
+      }
+
+      .empty-result {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      code {
+        display: block;
+        overflow-wrap: anywhere;
+        padding: 10px 11px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--panel-soft);
+        color: #0f172a;
+        font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+        font-size: 12.5px;
+        line-height: 1.5;
+      }
+
+      #longUrl,
+      #providerUrl {
+        border-color: #bfdbfe;
+        background: var(--accent-soft);
+      }
+
+      @media (max-width: 1120px) {
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+
+        .side-column {
+          position: static;
+        }
+
+        .log-box {
+          max-height: none;
+          min-height: 320px;
+        }
+      }
+
+      @media (max-width: 760px) {
+        main {
+          width: min(100vw - 20px, 980px);
+          padding: 14px 0 24px;
+        }
+
+        header,
+        .panel-header,
+        .actions {
+          display: grid;
+          align-items: start;
+        }
+
+        h1 {
+          font-size: 20px;
+        }
+
+        .stats,
+        .action-buttons,
+        .result-actions {
+          justify-content: stretch;
+        }
+
+        .stat,
+        .status-pill,
+        button,
+        a.button {
+          width: 100%;
+        }
+
+        .grid,
+        .grid.two,
+        .proxy-results {
+          grid-template-columns: 1fr;
+        }
+
+        .log-line {
+          grid-template-columns: 72px minmax(0, 1fr);
+        }
+
+        .log-line span:nth-child(2),
+        .log-line span:nth-child(4),
+        .log-line span:nth-child(5),
+        .log-line span:nth-child(6) {
+          display: none;
+        }
+
+        .bottom-bar {
+          position: static;
+          display: grid;
+          padding: 12px;
+          margin-top: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="brand">
+          <div class="brand-icon">∞</div>
+          <h1>PP Link Extractor <span class="version">v1.4.2</span></h1>
+        </div>
+        <div class="stats" aria-label="local stats">
+          <div class="stat running">
+            <strong>运行中</strong>
+            <span id="runMeta">未运行</span>
+          </div>
+          <div class="stat success">
+            <span>成功</span>
+            <strong id="successCount">0</strong>
+          </div>
+          <div class="stat danger">
+            <span>失败</span>
+            <strong id="failureCount">0</strong>
+          </div>
+          <button class="secondary" type="button" disabled>暂停</button>
+          <button class="secondary" type="button" disabled>停止</button>
+        </div>
+      </header>
+
+      <section class="tool">
+        <div class="workspace">
+          <div class="main-column">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2 class="panel-title">访问令牌（Access Token）</h2>
+                </div>
+              </div>
+              <div class="panel-body">
+                <textarea id="accessToken" autocomplete="off" spellcheck="false"></textarea>
+                <div id="tokenMeta" class="token-meta"></div>
+
+                <hr style="border: 0; border-top: 1px solid var(--line); margin: 24px 0" />
+                <h2 class="panel-title" style="margin-bottom: 22px">运行配置</h2>
+                <div class="grid">
+                  <div class="field">
+                    <label for="billingCountry">地区 (Region)</label>
+                    <select id="billingCountry"></select>
+                    <div class="token-meta">目标 PayPal 账户所在地区</div>
+                  </div>
+                  <div class="field">
+                    <label for="paymentMethodCountry">计费国家/地区 (PM Billing)</label>
+                    <select id="paymentMethodCountry"></select>
+                    <div class="token-meta">PayPal 计费国家/地区</div>
+                  </div>
+                  <div class="field">
+                    <label for="currency">货币 (Currency)</label>
+                    <input id="currency" readonly />
+                    <div class="token-meta">交易货币类型</div>
+                  </div>
+                  <div class="field">
+                    <label for="jpProxy">日本代理 (JP Proxy)</label>
+                    <input id="jpProxy" placeholder="http://user:pass@jp-proxy.example.com:8080" />
+                    <div class="token-meta">日本 IP 代理地址（必填）</div>
+                  </div>
+                  <div class="field" id="providerProxyField">
+                    <label for="usProxy">美国代理 (US Proxy)</label>
+                    <input id="usProxy" placeholder="http://user:pass@us-proxy.example.com:8080" />
+                    <div class="token-meta">美国 IP 代理地址（必填）</div>
+                  </div>
+                  <div class="field">
+                    <label for="paymentLocale">语言环境 (Locale)</label>
+                    <select id="paymentLocale">
+                      <option value="en" selected>en-US</option>
+                      <option value="zh-CN">zh-CN</option>
+                      <option value="zh-TW">zh-TW</option>
+                      <option value="ja">ja-JP</option>
+                      <option value="ko">ko-KR</option>
+                      <option value="de">de-DE</option>
+                      <option value="fr">fr-FR</option>
+                      <option value="es">es-ES</option>
+                      <option value="id">id-ID</option>
+                      <option value="pt-BR">pt-BR</option>
+                    </select>
+                    <div class="token-meta">请求语言/地区设置</div>
+                  </div>
+                </div>
+
+                <div style="min-height: 126px"></div>
+
+                <details style="margin-bottom: 18px">
+                  <summary>高级选项</summary>
+                  <div class="grid">
+                    <div>
+                      <label for="stripeKey">Stripe Publishable Key</label>
+                      <input id="stripeKey" placeholder="pk_live_..." />
+                    </div>
+                    <div>
+                      <label for="deviceId">Device ID</label>
+                      <input id="deviceId" placeholder="留空自动生成" />
+                    </div>
+                    <div>
+                      <label for="userAgent">User Agent</label>
+                      <input id="userAgent" placeholder="留空使用默认 Chrome UA" />
+                    </div>
+                  </div>
+                </details>
+
+                <div class="actions">
+                  <div class="action-buttons">
+                    <button id="generate">提取 PP 链</button>
+                    <button id="checkProxy" class="secondary" type="button">检测代理</button>
+                    <button id="saveProxy" class="secondary" type="button">保存代理</button>
+                    <button id="clearProxy" class="secondary" type="button">清除保存</button>
+                  </div>
+                  <span id="status" class="status">代理未检测。</span>
+                  <div id="proxyResults" class="proxy-results"></div>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="side-column">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2 class="panel-title">运行日志（实时）</h2>
+                </div>
+                <div class="result-actions">
+                  <button id="clearLogs" class="secondary" type="button">清空日志</button>
+                  <button id="copyLogs" class="secondary" type="button">导出日志</button>
+                </div>
+              </div>
+              <div id="logs" class="log-box" aria-live="polite">
+                <div class="log-line log-head">
+                  <span>时间</span><span>级别</span><span>消息</span><span>组合</span><span>状态</span><span>耗时</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2 class="panel-title">提取结果</h2>
+                  <div class="panel-note">成功后显示最终 PayPal BA approve 链。</div>
+                </div>
+                <div class="result-actions">
+                  <a id="openLink" class="button blue disabled" target="_blank" rel="noopener">跳转长链</a>
+                  <button id="copy" class="secondary" type="button" disabled>复制长链</button>
+                </div>
+              </div>
+              <div id="result" class="result panel-body show empty">
+                <div id="emptyResult" class="empty-result">等待提取结果。</div>
+                <div class="row">
+                  <label>长链</label>
+                  <code id="longUrl"></code>
+                </div>
+                <div class="row">
+                  <label>CS ID / checkout / PM / 币种</label>
+                  <code id="summary"></code>
+                </div>
+                <div class="row">
+                  <label>提取状态</label>
+                  <code id="extractStatus"></code>
+                </div>
+                <div class="row">
+                  <label>Provider Redirect URL</label>
+                  <code id="providerUrl"></code>
+                </div>
+                <div class="row">
+                  <label>Stripe Redirect URL</label>
+                  <code id="stripeRedirectUrl"></code>
+                </div>
+                <div class="row">
+                  <label>原始 Stripe URL</label>
+                  <code id="stripeUrl"></code>
+                </div>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <footer class="bottom-bar">
+      <div class="left">
+        <span>当前任务：PayPal BA 链提取</span>
+        <span>日志模式：实时轮询</span>
+        <span>组合回退：开启</span>
+      </div>
+      <div class="right">
+        <span class="api-dot"></span>
+        <span>API 状态：正常</span>
+      </div>
+    </footer>
+
+    <script>
+      const COUNTRIES = [
+        ["US", "美国 US", "USD"],
+        ["DE", "德国 DE", "EUR"],
+      ];
+
+      const $ = (id) => document.getElementById(id);
+      const generateButton = $("generate");
+      const copyButton = $("copy");
+      const openLink = $("openLink");
+      const statusLine = $("status");
+      let currentLongUrl = "";
+      let currentRunId = "";
+      let heartbeatLine = null;
+      let activePoll = null;
+      let runStartedAt = 0;
+      let comboRows = [];
+      let keyStepState = new Set();
+
+      function setStatus(text, isError = false) {
+        statusLine.textContent = text;
+        statusLine.classList.toggle("error", isError);
+      }
+
+      function setCounters(success, failure) {
+        $("successCount").textContent = String(success);
+        $("failureCount").textContent = String(failure);
+      }
+
+      function setCountersFromCombos() {
+        const success = comboRows.filter((row) => row.status === "成功").length;
+        const failure = comboRows.filter((row) => row.status === "失败").length;
+        setCounters(success, failure);
+      }
+
+      function base64UrlDecode(value) {
+        const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+        const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+        return decodeURIComponent(
+          atob(padded)
+            .split("")
+            .map((char) => "%" + ("00" + char.charCodeAt(0).toString(16)).slice(-2))
+            .join(""),
+        );
+      }
+
+      function findToken(value) {
+        if (!value) return "";
+        if (typeof value === "string") return value.trim();
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            const token = findToken(item);
+            if (token) return token;
+          }
+        }
+        if (typeof value === "object") {
+          for (const key of ["accessToken", "access_token", "token"]) {
+            if (typeof value[key] === "string" && value[key].trim()) return value[key].trim();
+          }
+          for (const item of Object.values(value)) {
+            const token = findToken(item);
+            if (token) return token;
+          }
+        }
+        return "";
+      }
+
+      function readAccessTokenInput() {
+        const raw = $("accessToken").value.trim();
+        if (!raw) return "";
+        if (raw.startsWith("{") || raw.startsWith("[")) {
+          try {
+            return findToken(JSON.parse(raw)) || raw;
+          } catch {
+            return raw;
+          }
+        }
+        return raw;
+      }
+
+      function updateTokenMeta() {
+        const token = readAccessTokenInput();
+        if (!token.includes(".")) {
+          $("tokenMeta").textContent = "";
+          return;
+        }
+        try {
+          const payload = JSON.parse(base64UrlDecode(token.split(".")[1] || ""));
+          const profile = payload["https://api.openai.com/profile"] || {};
+          const email = profile.email || payload.email || "";
+          $("tokenMeta").textContent = email ? `已识别 token，可能关联邮箱：${email}` : "已识别 token";
+        } catch {
+          $("tokenMeta").textContent = "";
+        }
+      }
+
+      function fillCountries() {
+        const select = $("billingCountry");
+        const pmSelect = $("paymentMethodCountry");
+        select.innerHTML = "";
+        pmSelect.innerHTML = "";
+        for (const [code, label] of COUNTRIES) {
+          const option = document.createElement("option");
+          option.value = code;
+          option.textContent = label;
+          if (code === "US") option.selected = true;
+          select.appendChild(option);
+
+          const pmOption = document.createElement("option");
+          pmOption.value = code;
+          pmOption.textContent = label;
+          if (code === "US") pmOption.selected = true;
+          pmSelect.appendChild(pmOption);
+        }
+      }
+
+      function updateCurrency() {
+        const selected = COUNTRIES.find(([code]) => code === $("billingCountry").value);
+        $("currency").value = selected ? selected[2] : "USD";
+      }
+
+      function updateRegionMode() {
+        $("providerProxyField").classList.remove("hidden");
+        $("usProxy").disabled = false;
+        updateCurrency();
+      }
+
+      function proxyPayload() {
+        return {
+          jp_proxy: $("jpProxy").value.trim(),
+          us_proxy: $("usProxy").value.trim(),
+          billing_country: $("billingCountry").value,
+          payment_method_country: $("paymentMethodCountry").value,
+        };
+      }
+
+      function requestPayload(accessToken) {
+        return {
+          accessToken,
+          jp_proxy: $("jpProxy").value.trim(),
+          us_proxy: $("usProxy").value.trim(),
+          billing_country: $("billingCountry").value,
+          payment_method_country: $("paymentMethodCountry").value,
+          payment_locale: $("paymentLocale").value,
+          stripe_publishable_key: $("stripeKey").value.trim(),
+          device_id: $("deviceId").value.trim(),
+          user_agent: $("userAgent").value.trim(),
+        };
+      }
+
+      function formatProxyResults(results) {
+        return (results || [])
+          .map((item) => {
+            if (!item.ok) return `${item.label}: ${compactProxyError(item.error || "检测失败")}`;
+            if (!item.proxy) return `${item.label}: 直连`;
+            return `${item.label}: ${item.ip || "未知 IP"} / ${item.country_code || "未知"} ${
+              item.country || ""
+            }`.trim();
+          })
+          .join("；");
+      }
+
+      function compactProxyError(error) {
+        const text = String(error || "");
+        if (/Unable to connect to proxy|无法连接|Failed to establish/.test(text)) return "连接代理失败";
+        if (/Too Many Requests|429/.test(text)) return "出口接口限流";
+        if (/timeout|timed out|超时/i.test(text)) return "检测超时";
+        if (/required/i.test(text) || /必须/.test(text)) return "出口地区不符";
+        return text.length > 42 ? `${text.slice(0, 42)}...` : text;
+      }
+
+      function renderProxyResults(results) {
+        const box = $("proxyResults");
+        box.innerHTML = "";
+        for (const item of results || []) {
+          const chip = document.createElement("div");
+          chip.className = `proxy-chip ${item.ok ? "ok" : "fail"}`;
+          chip.textContent = item.ok
+            ? `${item.label}: ${item.ip || "未知 IP"} / ${item.country_code || "未知"} ${item.country || ""}`.trim()
+            : `${item.label}: ${compactProxyError(item.error || "检测失败")}`;
+          box.appendChild(chip);
+        }
+        box.classList.toggle("show", Boolean((results || []).length));
+      }
+
+      async function checkProxy() {
+        const response = await fetch("/api/check-proxy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(proxyPayload()),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || "代理检测失败");
+        }
+        const message = formatProxyResults(data.results);
+        renderProxyResults(data.results || []);
+        setStatus(data.ok ? message || "代理检测完成。" : "代理检测未通过，请看下方 JP/US 出口结果。", !data.ok);
+        if (!data.ok) throw new Error("代理检测未通过，请看下方 JP/US 出口结果。");
+        return data;
+      }
+
+      function loadProxy() {
+        $("jpProxy").value = localStorage.getItem("openai_pay_long_link_jp_proxy") || "";
+        $("usProxy").value = localStorage.getItem("openai_pay_long_link_us_proxy") || "";
+      }
+
+      function setLinkEnabled(enabled) {
+        copyButton.disabled = !enabled;
+        openLink.classList.toggle("disabled", !enabled);
+        openLink.href = enabled ? currentLongUrl : "";
+      }
+
+      function renderLogHeader() {
+        $("logs").innerHTML = `
+          <div class="log-line log-head">
+            <span>时间</span><span>级别</span><span>消息</span><span>组合</span><span>状态</span><span>耗时</span>
+          </div>
+        `;
+      }
+
+      function clearLogs() {
+        renderLogHeader();
+        $("runMeta").textContent = "未运行";
+        currentRunId = "";
+        heartbeatLine = null;
+        comboRows = [];
+        keyStepState = new Set();
+      }
+
+      function formatElapsed(value) {
+        const ms = Number(value);
+        if (!Number.isFinite(ms) || ms < 0) return "–";
+        if (ms < 1000) return `${ms}ms`;
+        return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
+      }
+
+      function addLog(message, isError = false, step = "", event = null, options = {}) {
+        const line = document.createElement("div");
+        line.className = "log-line";
+        if (step === "summary") line.classList.add("summary");
+        const level = options.level || (isError ? "ERROR" : step === "summary" ? "DONE" : step === "heartbeat" ? "WAIT" : "INFO");
+        const combo = (message.match(/组合\s+([A-Z]{2}\+[A-Z]{2})/) || message.match(/checkout=([A-Z]{2}).*PM=([A-Z]{2})/));
+        const comboText = options.comboText || (combo ? (combo[2] ? `${combo[1]}+${combo[2]}` : combo[1]) : "–");
+        const statusText = options.statusText || (/成功|通过|完成/.test(message) ? "成功" : /失败|不可用|异常|错误|未拿到/.test(message) ? "失败" : "–");
+        const elapsed = options.elapsedText || (event && event.elapsed_ms !== undefined ? formatElapsed(event.elapsed_ms) : "–");
+        line.innerHTML = `
+          <span>${new Date().toLocaleTimeString()}</span>
+          <span class="log-level">${level}</span>
+          <span>${escapeHtml(message)}</span>
+          <span>${comboText}</span>
+          <span class="${statusText === "成功" ? "log-status-ok" : statusText === "失败" ? "log-status-fail" : ""}">${statusText}</span>
+          <span>${elapsed}</span>
+        `;
+        if (isError) line.style.color = "#fecaca";
+        $("logs").appendChild(line);
+        requestAnimationFrame(() => {
+          $("logs").scrollTop = $("logs").scrollHeight;
+        });
+      }
+
+      function escapeHtml(value) {
+        return String(value || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function updateHeartbeat(message, event = null) {
+        // 精简日志模式下隐藏心跳，后端仍保留完整事件。
+      }
+
+      async function copyLogs() {
+        const text = $("logs").innerText.trim();
+        if (!text) {
+          setStatus("暂无日志可复制。", true);
+          return;
+        }
+        await navigator.clipboard.writeText(text);
+        setStatus("日志已复制。");
+      }
+
+      function applyResult(data) {
+        currentLongUrl = data.long_url || "";
+        setCountersFromCombos();
+        $("longUrl").textContent = currentLongUrl;
+        const fallbackText = data.fallback ? "自动回退成功" : "首选组合成功";
+        const failureText = data.provider_error ? ` / 已跳过：${data.provider_error}` : "";
+        $("summary").textContent = `${data.cs_id || ""} / checkout ${data.billing_country || ""} / PM ${
+          data.payment_method_country || ""
+        } / ${data.currency || ""} / ${data.flow_type || "paypal"} / ${fallbackText}${failureText}`;
+        $("extractStatus").textContent = "OK";
+        $("providerUrl").textContent = data.provider_redirect_url || "";
+        $("stripeRedirectUrl").textContent = data.stripe_redirect_url || "";
+        $("stripeUrl").textContent = data.stripe_hosted_url || "";
+        $("result").classList.add("show");
+        $("result").classList.remove("empty");
+        $("emptyResult").textContent = "";
+        setLinkEnabled(Boolean(currentLongUrl));
+      }
+
+      function applyFailure(message) {
+        currentLongUrl = "";
+        setCountersFromCombos();
+        $("longUrl").textContent = "";
+        $("summary").textContent = currentRunId ? `run_id ${currentRunId}` : "";
+        $("extractStatus").textContent = message || "运行失败";
+        $("providerUrl").textContent = "";
+        $("stripeRedirectUrl").textContent = "";
+        $("stripeUrl").textContent = "";
+        $("emptyResult").textContent = "任务失败，摘要如下。";
+        $("result").classList.add("show");
+        $("result").classList.remove("empty");
+        setLinkEnabled(false);
+      }
+
+      function handleStreamEvent(event, state) {
+        if (event.run_id && event.run_id !== currentRunId) {
+          currentRunId = event.run_id;
+          $("runMeta").textContent = currentRunId;
+        }
+        if (event.type === "log") {
+          heartbeatLine = null;
+          handleVisibleLogEvent(event);
+        }
+        if (event.type === "heartbeat") updateHeartbeat(event.message, event);
+        if (event.type === "error") {
+          renderComboRows(event.elapsed_ms);
+          addFinalRunSummary(event.elapsed_ms);
+          state.error = new Error(event.message || "运行失败");
+          state.error.logged = true;
+          throw state.error;
+        }
+        if (event.type === "result") {
+          state.gotResult = true;
+          renderComboRows(event.elapsed_ms);
+          addFinalRunSummary(event.elapsed_ms);
+          applyResult(event.data || {});
+        }
+      }
+
+      function visibleStepFromEvent(event) {
+        const message = event.message || "";
+        if (/预检通过|US 出口|JP 出口|approve JP/.test(message)) {
+          return { key: `${event.step}:${message}`, message: `获取 IP 成功：${message.replace(/：/g, " ")}` };
+        }
+        if (message === "checkout 成功") return { key: "checkout", message: "步骤 1 checkout 成功" };
+        if (message === "Stripe init 成功") return { key: "stripe_init", message: "步骤 2 Stripe init 成功" };
+        if (message === "PM 创建成功") return { key: "payment_method", message: "步骤 3 PM 创建成功" };
+        if (message === "confirm 成功，解析跳转") return { key: "confirm", message: "步骤 4 confirm 成功" };
+        if (message === "approve 成功") return { key: "approve", message: "步骤 5 approve 成功" };
+        if (/已提取到 PayPal BA approve 链/.test(message)) return { key: "ba_link", message: "步骤 6 BA 链成功" };
+        return null;
+      }
+
+      function handleVisibleLogEvent(event) {
+        if (event.step === "combo_result") {
+          comboRows.push(event);
+          return;
+        }
+        const visible = visibleStepFromEvent(event);
+        if (!visible || keyStepState.has(visible.key)) return;
+        keyStepState.add(visible.key);
+        addLog(visible.message, false, event.step || "", event, {
+          level: "INFO",
+          comboText: "–",
+          statusText: "成功",
+        });
+      }
+
+      function renderComboRows(totalElapsedMs) {
+        if (!comboRows.length || comboRows.rendered) return;
+        comboRows.rendered = true;
+        for (const row of comboRows) {
+          const ok = row.status === "成功";
+          addLog(row.message || "组合测试", !ok, "combo_result", row, {
+            level: ok ? "INFO" : "WARN",
+            comboText: String(row.combo_index || "–"),
+            statusText: row.status || (ok ? "成功" : "失败"),
+            elapsedText: formatElapsed(row.combo_elapsed_ms ?? row.elapsed_ms),
+          });
+        }
+      }
+
+      function addFinalRunSummary(totalElapsedMs) {
+        const success = comboRows.filter((row) => row.status === "成功").length;
+        const failure = comboRows.filter((row) => row.status === "失败").length;
+        addLog(`运行完成：成功 ${success}，失败 ${failure}，总计 ${success + failure}`, false, "summary", { elapsed_ms: totalElapsedMs }, {
+          level: "INFO",
+          comboText: "–",
+          statusText: "–",
+          elapsedText: formatElapsed(totalElapsedMs),
+        });
+      }
+
+      function processStreamChunk(text, state) {
+        state.buffer += text;
+        const lines = state.buffer.split("\n");
+        state.buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          handleStreamEvent(JSON.parse(line), state);
+        }
+      }
+
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      async function fetchJsonWithRetry(url, options = {}, attempts = 3) {
+        let lastError = null;
+        for (let index = 1; index <= attempts; index++) {
+          try {
+            const response = await fetch(url, options);
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+            return data;
+          } catch (error) {
+            lastError = error;
+            if (index >= attempts) break;
+            await sleep(350 * index);
+          }
+        }
+        throw lastError || new Error("请求失败");
+      }
+
+      async function startRun(accessToken) {
+        return fetchJsonWithRetry("/api/long-link/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestPayload(accessToken)),
+        }, 2);
+      }
+
+      async function pollRun(runId) {
+        let cursor = 0;
+        let gotResult = false;
+        let done = false;
+        while (!done) {
+          if (activePoll !== runId) throw new Error("任务已取消。");
+          const data = await fetchJsonWithRetry(`/api/long-link/events/${encodeURIComponent(runId)}?cursor=${cursor}`, {
+            cache: "no-store",
+          }, 3);
+          cursor = Number(data.cursor || cursor);
+          done = Boolean(data.done);
+          for (const event of data.events || []) {
+            const state = { gotResult: false };
+            handleStreamEvent(event, state);
+            if (state.gotResult) gotResult = true;
+          }
+          if (!done) await sleep(500);
+        }
+        try {
+          const finalData = await fetchJsonWithRetry(`/api/long-link/events/${encodeURIComponent(runId)}?cursor=${cursor}`, {
+            cache: "no-store",
+          }, 3);
+          for (const event of finalData.events || []) {
+            const state = { gotResult: false };
+            handleStreamEvent(event, state);
+            if (state.gotResult) gotResult = true;
+          }
+        } catch {
+          // 最终补拉失败不覆盖前面已经拿到的业务日志。
+        }
+        if (!gotResult) throw new Error("任务结束但未返回结果。");
+      }
+
+      async function generate() {
+        const accessToken = readAccessTokenInput();
+        if (!accessToken) {
+          setStatus("Access Token 不能为空。", true);
+          return;
+        }
+
+        generateButton.disabled = true;
+        generateButton.textContent = "运行中...";
+        setCounters(0, 0);
+        setLinkEnabled(false);
+        $("result").classList.add("show", "empty");
+        $("emptyResult").textContent = "任务运行中，等待结果。";
+        $("longUrl").textContent = "";
+        $("summary").textContent = "";
+        $("extractStatus").textContent = "";
+        $("providerUrl").textContent = "";
+        $("stripeRedirectUrl").textContent = "";
+        $("stripeUrl").textContent = "";
+        clearLogs();
+        setStatus("正在运行...");
+
+        try {
+          const started = await startRun(accessToken);
+          currentRunId = started.run_id || "";
+          activePoll = currentRunId;
+          $("runMeta").textContent = currentRunId || "已启动";
+          await pollRun(currentRunId);
+          setStatus("提取完成。");
+        } catch (error) {
+          currentLongUrl = "";
+          const message = error instanceof Error ? error.message : String(error);
+          if (!error || !error.logged) addLog(message, true);
+          applyFailure(message);
+          setStatus(message, true);
+        } finally {
+          activePoll = null;
+          generateButton.textContent = "提取 PP 链";
+          generateButton.disabled = false;
+        }
+      }
+
+      async function copyLink() {
+        if (!currentLongUrl) return;
+        await navigator.clipboard.writeText(currentLongUrl);
+        setStatus("已复制。");
+      }
+
+      fillCountries();
+      updateRegionMode();
+      updateCurrency();
+      loadProxy();
+      $("accessToken").addEventListener("input", updateTokenMeta);
+      $("billingCountry").addEventListener("change", updateRegionMode);
+      $("checkProxy").addEventListener("click", async () => {
+        $("checkProxy").disabled = true;
+        setStatus("正在检测代理...");
+        try {
+          await checkProxy();
+        } catch (error) {
+          setStatus(error instanceof Error ? error.message : String(error), true);
+        } finally {
+          $("checkProxy").disabled = false;
+        }
+      });
+      $("saveProxy").addEventListener("click", () => {
+        localStorage.setItem("openai_pay_long_link_jp_proxy", $("jpProxy").value.trim());
+        localStorage.setItem("openai_pay_long_link_us_proxy", $("usProxy").value.trim());
+        setStatus("代理已保存在本机浏览器。");
+      });
+      $("clearProxy").addEventListener("click", () => {
+        localStorage.removeItem("openai_pay_long_link_jp_proxy");
+        localStorage.removeItem("openai_pay_long_link_us_proxy");
+        $("jpProxy").value = "";
+        $("usProxy").value = "";
+        setStatus("已清除保存的代理。");
+      });
+      generateButton.addEventListener("click", generate);
+      copyButton.addEventListener("click", copyLink);
+      $("copyLogs").addEventListener("click", copyLogs);
+      $("clearLogs").addEventListener("click", clearLogs);
+    </script>
+  </body>
+</html>
