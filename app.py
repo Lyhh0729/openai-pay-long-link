@@ -217,6 +217,12 @@ def new_proxy_session_id() -> str:
 
 
 def rotate_kookeey_proxy_session(proxy: str, country: str) -> str:
+    """Rotate the sticky-session portion of a Kookeey proxy password.
+
+    Only modifies the proxy when the password follows the Kookeey convention
+    ``<base>-<CC>[-<session>]``.  Returns *proxy* unchanged otherwise so that
+    non-Kookeey proxies are never broken by rotation.
+    """
     proxy = normalize_proxy_url(proxy)
     country = str(country or "").strip().upper()
     if not proxy or not country:
@@ -229,10 +235,11 @@ def rotate_kookeey_proxy_session(proxy: str, country: str) -> str:
         return proxy
 
     match = re.match(r"^(?P<base>.+?)-(?P<country>[A-Za-z]{2})(?:-[A-Za-z0-9]+)?$", password)
-    if match:
-        password_base = match.group("base")
-    else:
-        password_base = password
+    if not match:
+        # Password does not follow Kookeey format – return unchanged so the
+        # proxy is never broken by rotation.
+        return proxy
+    password_base = match.group("base")
     rotated_password = f"{password_base}-{country}-{new_proxy_session_id()}"
 
     hostname = parsed.hostname or ""
@@ -2123,9 +2130,18 @@ def run_single_combo(
     log("proxy", "检测 provider US 出口；checkout/approve JP 会在对应阶段检测。")
     run_req = req
     proxy_error = ""
-    for attempt in range(1, 6):
-        run_req = req.model_copy(update={"us_proxy": rotate_kookeey_proxy_session(provider_stage_proxy(req), "US")})
-        log("proxy", f"provider US 第 {attempt}/5 次：自动轮换粘性 session。")
+    base_proxy = provider_stage_proxy(req)
+    rotated = rotate_kookeey_proxy_session(base_proxy, "US")
+    can_rotate = rotated != base_proxy
+    max_attempts = 5 if can_rotate else 1
+    for attempt in range(1, max_attempts + 1):
+        if can_rotate:
+            run_req = req.model_copy(update={"us_proxy": rotate_kookeey_proxy_session(base_proxy, "US")})
+            log("proxy", f"provider US 第 {attempt}/{max_attempts} 次：自动轮换粘性 session。")
+        else:
+            run_req = req.model_copy(update={"us_proxy": base_proxy})
+            if attempt == 1:
+                log("proxy", "provider US 非 Kookeey 格式代理，跳过 session 轮换，直接检测。")
         provider_probe = check_provider_proxy(run_req)
         if provider_probe.ok:
             break
