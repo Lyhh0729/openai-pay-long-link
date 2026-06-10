@@ -2190,9 +2190,21 @@ def short_error(detail: str, limit: int = 260) -> str:
 
 
 def is_retryable_combo_failure(exc: HTTPException) -> bool:
-    if exc.status_code in (400, 401, 403):
-        return False
     detail = str(exc.detail or "").lower()
+    # Stripe confirm errors (e.g. payment_method not available for currency)
+    # should trigger combo fallback instead of stopping the whole run.
+    stripe_confirm_markers = (
+        "checkout_confirm_error",
+        "confirm_error",
+        "payment_method_type",
+    )
+    is_stripe_confirm = any(m in detail for m in stripe_confirm_markers)
+
+    if exc.status_code in (400, 401, 403):
+        if is_stripe_confirm:
+            return True  # try next combo
+        return False
+
     non_retryable_markers = (
         "access token",
         "unauthorized",
