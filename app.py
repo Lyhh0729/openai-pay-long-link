@@ -1552,12 +1552,16 @@ def create_provider_link_with_retry(
             # Free-trial guard: the promo "plus-1-month-free" must produce $0.
             # If the amount is non-zero the access token is not eligible and
             # we should stop immediately instead of creating a paid agreement.
+            init_amount = expected_amount(init_payload)
+            if init_amount not in ("0", ""):
+                if emit:
+                    emit("stripe_init", f"结账金额非 $0（当前: {init_amount}），此号无免费试用资格，终止。")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"此 access token 无免费试用资格（结账金额: {init_amount}），已终止。请使用有免费试用资格的账号。",
+                )
             if emit:
-                init_amount = expected_amount(init_payload)
-                if init_amount not in ("0", ""):
-                    emit("stripe_init", f"结账金额: {init_amount}（非 $0，此号无免费试用资格）")
-                else:
-                    emit("stripe_init", f"结账金额确认：$0（免费试用），继续。")
+                emit("stripe_init", f"结账金额确认：$0（免费试用），继续。")
             provider = create_provider_link(
                 chatgpt,
                 checkout,
