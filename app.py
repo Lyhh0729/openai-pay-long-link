@@ -2184,6 +2184,13 @@ def summarize_combo_failure(detail: str) -> str:
     if "redirect url resolution timeout" in text:
         return "未解析到 BA approve 链"
     if "stripe submission failed" in text:
+        # Try to extract the actual decline reason
+        for marker in markers:
+            match = re.search(marker, text)
+            if match:
+                value = match.group(1).strip()
+                if value and value.lower() not in {"无", "none", "unknown", "未知"}:
+                    return f"Stripe 拒绝: {short_error(value, 60)}"
         return "Stripe submission failed"
     if "未提取到最终 PayPal BA approve 链" in text:
         return "未提取到 BA approve 链"
@@ -2191,8 +2198,15 @@ def summarize_combo_failure(detail: str) -> str:
 
 
 def combo_attempt_order(checkout_country: str, pm_country: str) -> list[tuple[str, str]]:
-    # Only try exactly what the user selected — one shot, no fallback waste
-    return [(normalize_country(checkout_country), normalize_country(pm_country))]
+    # ChatGPT Plus is always priced in USD.  Keep the checkout in USD so
+    # PayPal reliably accepts it, while using the user's selected country
+    # for the billing address data sent to PayPal.
+    cc = normalize_country(checkout_country)
+    pm = normalize_country(pm_country)
+    if cc != "US":
+        # Try user's preferred combo first, then fall back to US checkout
+        return [(cc, pm), ("US", pm)]
+    return [(cc, pm)]
 
 
 def short_error(detail: str, limit: int = 260) -> str:

@@ -563,13 +563,10 @@ class TestAuLocale:
 
 
 class TestAuComboOrder:
-    def test_au_au_is_only_combo(self):
+    def test_au_falls_back_to_us(self):
         order = combo_attempt_order("AU", "AU")
-        assert order == [("AU", "AU")]
-
-    def test_us_us_is_only_combo(self):
-        order = combo_attempt_order("US", "US")
-        assert order == [("US", "US")]
+        assert ("US", "AU") in order
+        assert len(order) == 2
 
 
 # ───────────────────────────  single proxy mode  ───────────────────────────
@@ -606,24 +603,24 @@ class TestSingleProxyMode:
 
 
 class TestComboAttemptOrder:
-    def test_default_us_us(self):
+    def test_default_us_stays_us(self):
         order = combo_attempt_order("US", "US")
-        assert len(order) == 1
-        assert order[0] == ("US", "US")
+        assert order == [("US", "US")]
 
-    def test_de_de(self):
-        order = combo_attempt_order("DE", "DE")
-        assert order[0] == ("DE", "DE")
-        assert len(order) == 1
-
-    def test_au_au(self):
+    def test_non_us_falls_back_to_us_checkout(self):
+        # AU+AU → tries AU+AU first, then falls back to US+AU
         order = combo_attempt_order("AU", "AU")
         assert order[0] == ("AU", "AU")
-        assert len(order) == 1
+        assert order[1] == ("US", "AU")
+        assert len(order) == 2
+
+    def test_de_falls_back_to_us_checkout(self):
+        order = combo_attempt_order("DE", "DE")
+        assert order[0] == ("DE", "DE")
+        assert order[1] == ("US", "DE")
 
     def test_no_duplicates(self):
         order = combo_attempt_order("US", "DE")
-        assert len(order) == 1
         assert order == [("US", "DE")]
 
     def test_all_combos_valid_countries(self):
