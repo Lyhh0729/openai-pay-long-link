@@ -2203,15 +2203,20 @@ def summarize_combo_failure(detail: str) -> str:
 
 
 def combo_attempt_order(checkout_country: str, pm_country: str) -> list[tuple[str, str]]:
-    # ChatGPT Plus is always priced in USD.  Keep the checkout in USD so
-    # PayPal reliably accepts it, while using the user's selected country
-    # for the billing address data sent to PayPal.
     cc = normalize_country(checkout_country)
     pm = normalize_country(pm_country)
+    # Build priority list, then deduplicate while preserving order.
+    candidates = [(cc, pm)]
     if cc != "US":
-        # Try user's preferred combo first, then fall back to US checkout
-        return [(cc, pm), ("US", pm)]
-    return [(cc, pm)]
+        candidates.append(("US", pm))
+    candidates.append(("US", "US"))
+    seen: set[tuple[str, str]] = set()
+    result: list[tuple[str, str]] = []
+    for item in candidates:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
 
 
 def short_error(detail: str, limit: int = 260) -> str:
