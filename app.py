@@ -646,19 +646,19 @@ def create_checkout(req: LongLinkRequest, chatgpt_session: Any | None = None) ->
     billing_country = effective_country(req)
     currency = currency_for_country(billing_country)
     checkout_ui_mode = (req.checkout_ui_mode or "custom").strip() or "custom"
-    body = {
+    body: dict[str, Any] = {
         "entry_point": "all_plans_pricing_modal",
         "plan_name": "chatgptplusplan",
         "billing_details": {
             "country": billing_country,
             "currency": currency,
         },
-        "promo_campaign": {
-            "promo_campaign_id": "plus-1-month-free",
-            "is_coupon_from_query_param": False,
-        },
         "checkout_ui_mode": checkout_ui_mode,
     }
+    # Note: promo_campaign intentionally omitted.
+    # The "plus-1-month-free" campaign can produce a $0 checkout which
+    # causes PayPal to return generic_decline (billing agreements require
+    # a positive amount).  Omitting it yields the standard $20 / €20 price.
     headers = {
         "Referer": "https://chatgpt.com/",
         "x-openai-target-path": "/backend-api/payments/checkout",
