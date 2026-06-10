@@ -1014,7 +1014,7 @@ def is_external_url(value: str) -> bool:
 
 def is_paypal_url(value: str) -> bool:
     host = (urlsplit(value).netloc or "").lower()
-    return host == "paypal.com" or host.endswith(".paypal.com") or host == "paypalobjects.com" or host.endswith(".paypalobjects.com")
+    return bool(re.match(r"^(?:.+\.)?paypal\.com(?:\.[a-z]{2,3})?$", host)) or bool(re.match(r"^(?:.+\.)?paypalobjects\.com$", host))
 
 
 def is_paypal_ba_approve_url(value: str) -> bool:
@@ -1023,7 +1023,7 @@ def is_paypal_ba_approve_url(value: str) -> bool:
     except Exception:
         return False
     host = (parsed.netloc or "").lower()
-    if not (host == "paypal.com" or host.endswith(".paypal.com")):
+    if not re.match(r"^(?:.+\.)?paypal\.com(?:\.[a-z]{2,3})?$", host):
         return False
     path = parsed.path.rstrip("/").lower()
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
@@ -1418,7 +1418,7 @@ def redirect_url_after_confirm(
         return stripe_payment_page_redirect_url(stripe, cs_id, stripe_pk, req, ctx, timeout_seconds=45, emit=emit)
 
 
-def resolve_external_redirect(stripe: Any, redirect_url: str, preferred_hosts: tuple[str, ...] = (), max_hops: int = 5) -> str:
+def resolve_external_redirect(stripe: Any, redirect_url: str, preferred_hosts: tuple[str, ...] = (), max_hops: int = 10) -> str:
     current = str(redirect_url or "").strip()
     for _ in range(max(1, int(max_hops or 1))):
         if not current:
@@ -1545,6 +1545,17 @@ def create_provider_link_with_retry(
                 )
             if emit:
                 emit("stripe_init", "Stripe init 成功。")
+            # Free-trial guard: the promo "plus-1-month-free" must produce $0.
+            # If the amount is non-zero the access token is not eligible and
+            # we should stop immediately instead of creating a paid agreement.
+            init_amount = expected_amount(init_payload)
+            if init_amount not in ("0", ""):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"结账金额非 $0（当前金额: {init_amount}），此 access token 无免费试用资格，请更换 token 或确认账号。",
+                )
+            if emit:
+                emit("stripe_init", f"结账金额确认：$0（免费试用），继续。")
             provider = create_provider_link(
                 chatgpt,
                 checkout,
