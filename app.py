@@ -1280,12 +1280,12 @@ def stripe_payment_page_redirect_url(
             payload = response.json() or {}
             redirect_url = extract_redirect_to_url(payload)
             if redirect_url:
-                if is_paypal_ba_approve_url(redirect_url):
-                    if emit:
+                if emit:
+                    if is_paypal_ba_approve_url(redirect_url):
                         emit("redirect", "轮询命中 PayPal BA approve 链！")
-                    return redirect_url
-                if emit and (poll_count == 1 or poll_count % 5 == 0):
-                    emit("redirect", f"发现 PayPal 跳转候选但非 BA approve：{redirect_url[:200]}")
+                    else:
+                        emit("redirect", f"发现 PayPal 跳转候选：{redirect_url[:200]}，将交由 resolve_external_redirect 跟随跳转。")
+                return redirect_url
             else:
                 # Log what URLs we ARE finding to help debugging
                 all_urls = collect_urls(payload)
