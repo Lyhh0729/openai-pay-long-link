@@ -612,6 +612,10 @@ def build_chatgpt_session(req: LongLinkRequest) -> Any:
         raise HTTPException(status_code=400, detail="accessToken is required")
 
     device_id = req.device_id.strip() or str(uuid.uuid4())
+    # Store the generated device_id back so checkout and approve reuse the same
+    # device identity — ChatGPT rejects approve if device_id differs.
+    if not req.device_id.strip():
+        req.device_id = device_id
     user_agent = req.user_agent.strip() or DEFAULT_USER_AGENT
     session = new_session()
     session.headers.update(
