@@ -826,8 +826,9 @@ def stripe_confirm_return_url(cs_id: str, checkout: dict[str, Any], stripe_hoste
 
 
 def expected_amount(init_payload: Any) -> str:
+    """Return the checkout amount from a Stripe init payload, or empty string if unknown."""
     if not isinstance(init_payload, dict):
-        return "0"
+        return ""
     total_summary = init_payload.get("total_summary")
     if isinstance(total_summary, dict) and total_summary.get("due") is not None:
         return str(total_summary.get("due"))
@@ -847,12 +848,12 @@ def expected_amount(init_payload: Any) -> str:
                     pass
         if found:
             return str(total)
-    return "0"
+    return ""
 
 
 def stripe_context(cs_id: str, init_payload: dict[str, Any], req: LongLinkRequest) -> dict[str, Any]:
     _, elements_locale = locale_parts(req.payment_locale)
-    amount_str = expected_amount(init_payload)
+    amount_str = expected_amount(init_payload) or "0"
     # AU 含 10% GST：stripe_init 返回的 invoice 金额通常不含税，创建 PM 后 Stripe 重新计算 upcoming_invoice 会加上 GST
     if str(req.payment_method_country or "").upper() == "AU" or str(req.billing_country or "").upper() == "AU":
         try:
@@ -1553,7 +1554,7 @@ def create_provider_link_with_retry(
             # If the amount is non-zero the access token is not eligible and
             # we should stop immediately instead of creating a paid agreement.
             init_amount = expected_amount(init_payload)
-            if init_amount not in ("0", ""):
+            if init_amount and init_amount != "0":
                 if emit:
                     emit("stripe_init", f"结账金额非 $0（当前: {init_amount}），此号无免费试用资格，终止。")
                 raise HTTPException(
@@ -1561,7 +1562,10 @@ def create_provider_link_with_retry(
                     detail=f"此 access token 无免费试用资格（结账金额: {init_amount}），已终止。请使用有免费试用资格的账号。",
                 )
             if emit:
-                emit("stripe_init", f"结账金额确认：$0（免费试用），继续。")
+                if init_amount == "0":
+                    emit("stripe_init", f"结账金额确认：$0（免费试用），继续。")
+                else:
+                    emit("stripe_init", "结账金额未检测到，继续。")
             provider = create_provider_link(
                 chatgpt,
                 checkout,
