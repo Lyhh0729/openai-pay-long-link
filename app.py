@@ -2055,10 +2055,11 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
         except HTTPException as exc:
             detail = str(exc.detail)
             short_detail = short_error(detail)
-            summary = f"{combo_label}: {short_detail}"
+            failure_reason = summarize_combo_failure(detail)
+            summary = f"{combo_label}: {failure_reason}"
             failures.append(summary)
             combo_result["status"] = "失败"
-            combo_result["detail"] = summarize_combo_failure(detail)
+            combo_result["detail"] = failure_reason
             combo_result["elapsed_ms"] = str(int((time.time() - combo_started_at) * 1000))
             emit_combo_result(
                 emit,
@@ -2067,13 +2068,13 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
                 pm_country,
                 "失败",
                 int(combo_result["elapsed_ms"]),
-                combo_result["detail"],
+                failure_reason,
             )
+            # Always log the full error detail so we can diagnose
+            log("error", f"组合 {combo_label} 失败原因：{short_error(detail, 300)}")
             if not is_retryable_combo_failure(exc):
-                log("error", f"组合 {combo_label} 失败且不可回退：{short_detail}")
                 log("summary", format_combo_results(combo_results))
                 raise
-            log("combo", f"组合 {combo_label} 未拿到 BA approve：{short_detail}")
             if index < len(combos):
                 next_checkout, next_pm = combos[index]
                 log("combo", f"自动切换下一个组合：checkout={next_checkout}，PM={next_pm}。")
