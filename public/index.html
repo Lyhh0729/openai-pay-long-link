@@ -717,14 +717,15 @@
                     <div class="token-meta">日本 IP 代理地址（必填）</div>
                   </div>
                   <div class="field" id="providerProxyField">
-                    <label for="usProxy">美国代理 (US Proxy)</label>
-                    <input id="usProxy" placeholder="http://user:pass@us-proxy.example.com:8080" />
-                    <div class="token-meta">美国 IP 代理地址（必填）</div>
+                    <label for="usProxy">美国代理 (US Proxy) <span style="color:#059669;font-weight:400">— 可选，留空则复用 JP 代理</span></label>
+                    <input id="usProxy" placeholder="留空自动共享 JP 代理" />
+                    <div class="token-meta">单代理模式：留空即可，Stripe/PayPal 阶段自动复用 JP 代理</div>
                   </div>
                   <div class="field">
                     <label for="paymentLocale">语言环境 (Locale)</label>
                     <select id="paymentLocale">
-                      <option value="en" selected>en-US</option>
+                      <option value="en-AU" selected>en-AU</option>
+                      <option value="en">en-US</option>
                       <option value="zh-CN">zh-CN</option>
                       <option value="zh-TW">zh-TW</option>
                       <option value="ja">ja-JP</option>
@@ -849,6 +850,7 @@
 
     <script>
       const COUNTRIES = [
+        ["AU", "澳大利亚 AU", "AUD"],
         ["US", "美国 US", "USD"],
         ["DE", "德国 DE", "EUR"],
       ];
@@ -952,13 +954,13 @@
           const option = document.createElement("option");
           option.value = code;
           option.textContent = label;
-          if (code === "US") option.selected = true;
+          if (code === "AU") option.selected = true;
           select.appendChild(option);
 
           const pmOption = document.createElement("option");
           pmOption.value = code;
           pmOption.textContent = label;
-          if (code === "US") pmOption.selected = true;
+          if (code === "AU") pmOption.selected = true;
           pmSelect.appendChild(pmOption);
         }
       }

@@ -93,13 +93,63 @@ DE_BILLING_STREETS = [
     ("Schadowstrasse 36", "Dusseldorf", "NW", "40212"),
     ("Breite Strasse 18", "Bonn", "NW", "53111"),
 ]
+AU_BILLING_NAMES = [
+    ("Oliver", "Smith"),
+    ("Charlotte", "Jones"),
+    ("Jack", "Williams"),
+    ("Amelia", "Brown"),
+    ("Thomas", "Wilson"),
+    ("Isabella", "Taylor"),
+    ("James", "Anderson"),
+    ("Mia", "Thomas"),
+    ("William", "Jackson"),
+    ("Sophie", "White"),
+    ("Lucas", "Harris"),
+    ("Grace", "Martin"),
+    ("Ethan", "Thompson"),
+    ("Chloe", "Nguyen"),
+    ("Liam", "Roberts"),
+    ("Zoe", "Walker"),
+    ("Noah", "Ryan"),
+    ("Ruby", "Mitchell"),
+    ("Henry", "Campbell"),
+    ("Matilda", "Young"),
+    ("Alexander", "Lee"),
+    ("Ella", "King"),
+    ("Samuel", "Wright"),
+    ("Sienna", "Evans"),
+]
+AU_BILLING_STREETS = [
+    ("42 George Street", "Sydney", "NSW", "2000"),
+    ("15 Collins Street", "Melbourne", "VIC", "3000"),
+    ("267 Queen Street", "Brisbane", "QLD", "4000"),
+    ("128 St Georges Terrace", "Perth", "WA", "6000"),
+    ("55 King William Street", "Adelaide", "SA", "5000"),
+    ("36 Elizabeth Street", "Hobart", "TAS", "7000"),
+    ("19 Northbourne Avenue", "Canberra", "ACT", "2601"),
+    ("88 Mitchell Street", "Darwin", "NT", "0800"),
+    ("72 Pitt Street", "Sydney", "NSW", "2000"),
+    ("210 Bourke Street", "Melbourne", "VIC", "3000"),
+    ("3 Adelaide Street", "Brisbane", "QLD", "4000"),
+    ("502 Hay Street", "Perth", "WA", "6000"),
+    ("140 North Terrace", "Adelaide", "SA", "5000"),
+    ("77 Liverpool Street", "Hobart", "TAS", "7000"),
+    ("31 Lonsdale Street", "Braddon", "ACT", "2612"),
+    ("120 Smith Street", "Darwin", "NT", "0800"),
+    ("89 Macquarie Street", "Sydney", "NSW", "2000"),
+    ("199 Swanston Street", "Melbourne", "VIC", "3000"),
+    ("54 Ann Street", "Brisbane", "QLD", "4000"),
+    ("314 Murray Street", "Perth", "WA", "6000"),
+]
 COUNTRY_CURRENCY = {
     "US": "USD",
     "DE": "EUR",
+    "AU": "AUD",
 }
 LOCALE_MAP = {
     "de": ("de-DE", "de"),
     "en": ("en-US", "en"),
+    "en-AU": ("en-AU", "en-AU"),
     "en-US": ("en-US", "en"),
     "es": ("es-ES", "es"),
     "fr": ("fr-FR", "fr"),
@@ -307,9 +357,19 @@ def is_retryable_provider_http_exception(exc: HTTPException) -> bool:
 
 
 def provider_stage_proxy(req: LongLinkRequest) -> str:
+    """Return the proxy for Stripe / provider-stage requests.
+
+    When the user supplies an explicit ``us_proxy`` it is used as-is.
+    Otherwise the provider stage reuses the same JP proxy as the
+    checkout / approve stage, enabling a single-proxy deployment.
+    """
     explicit = str(req.us_proxy or "").strip()
     if explicit:
         return normalize_proxy_url(explicit)
+    # Default: reuse JP proxy for the full flow (single-proxy mode)
+    jp = checkout_stage_proxy(req)
+    if jp:
+        return jp
     return normalize_proxy_url(PROVIDER_STAGE_PROXY)
 
 
@@ -409,16 +469,38 @@ def probe_proxy(label: str, proxy: str, expected_country: str = "", required: bo
 def check_request_proxies(req: LongLinkRequest) -> list[ProxyProbeResult]:
     jp_proxy = checkout_stage_proxy(req)
     provider_proxy = provider_stage_proxy(req)
+    single_proxy = provider_proxy == jp_proxy
+
     results = [
         probe_proxy("checkout/approve JP", jp_proxy, "JP", required=True),
     ]
-    results.append(probe_proxy("provider US", provider_proxy, "US", required=True))
-    mark_same_exit(results)
+    if single_proxy:
+        # Single-proxy mode: provider reuses JP proxy; skip redundant geo check
+        results.append(
+            ProxyProbeResult(
+                ok=True,
+                label="provider (共享 JP)",
+                proxy=provider_proxy,
+                ip=results[0].ip,
+                country=results[0].country,
+                country_code=results[0].country_code,
+            )
+        )
+    else:
+        results.append(probe_proxy("provider US", provider_proxy, "US", required=True))
+        mark_same_exit(results)
     return results
 
 
 def check_provider_proxy(req: LongLinkRequest) -> ProxyProbeResult:
-    return probe_proxy("provider US", provider_stage_proxy(req), "US", required=True)
+    provider_proxy = provider_stage_proxy(req)
+    jp_proxy = checkout_stage_proxy(req)
+    if provider_proxy == jp_proxy:
+        # Single-proxy mode — reuse JP check result
+        jp_result = probe_proxy("provider (共享 JP)", provider_proxy, "JP", required=True)
+        jp_result.label = "provider US"
+        return jp_result
+    return probe_proxy("provider US", provider_proxy, "US", required=True)
 
 
 def mark_same_exit(results: list[ProxyProbeResult]) -> None:
@@ -823,6 +905,9 @@ def billing_for_country(country: str) -> dict[str, str]:
     if country == "DE":
         first_name, last_name = random.choice(DE_BILLING_NAMES)
         line1, city, state, postal_code = random.choice(DE_BILLING_STREETS)
+    elif country == "AU":
+        first_name, last_name = random.choice(AU_BILLING_NAMES)
+        line1, city, state, postal_code = random.choice(AU_BILLING_STREETS)
     elif country == "US":
         first_name, last_name = random.choice(US_BILLING_NAMES)
         line1, city, state, postal_code = random.choice(US_BILLING_STREETS)
@@ -1461,20 +1546,25 @@ def create_provider_link_with_retry(
     emit: Any | None = None,
 ) -> dict[str, str]:
     last_error = ""
+    uses_dedicated_us = bool(str(req.us_proxy or "").strip())
+    rotate_country = "US" if uses_dedicated_us else "JP"
+    provider_label = "US" if uses_dedicated_us else "JP（共享）"
     for attempt in range(1, PROVIDER_RETRY_ATTEMPTS + 1):
-        attempt_req = req.model_copy(update={"us_proxy": rotate_kookeey_proxy_session(provider_stage_proxy(req), "US")})
+        attempt_req = req.model_copy(
+            update={"us_proxy": rotate_kookeey_proxy_session(provider_stage_proxy(req), rotate_country)}
+        )
         provider_proxy = provider_stage_proxy(attempt_req)
         if emit:
-            emit("provider", f"provider 第 {attempt}/{PROVIDER_RETRY_ATTEMPTS} 次：轮换 US session。")
-            emit("proxy", f"provider 第 {attempt}/{PROVIDER_RETRY_ATTEMPTS} 次：正在检测 US 出口。")
+            emit("provider", f"provider 第 {attempt}/{PROVIDER_RETRY_ATTEMPTS} 次：轮换 {provider_label} session。")
+            emit("proxy", f"provider 第 {attempt}/{PROVIDER_RETRY_ATTEMPTS} 次：正在检测 {provider_label} 出口。")
         provider_probe = check_provider_proxy(attempt_req)
         if not provider_probe.ok:
-            last_error = provider_probe.error or "provider US 代理不可用"
+            last_error = provider_probe.error or f"provider {provider_label} 代理不可用"
             if emit:
-                emit("proxy", f"provider US session 不可用，准备更换：{last_error}")
+                emit("proxy", f"provider {provider_label} session 不可用，准备更换：{last_error}")
             continue
         if emit:
-            emit("proxy", f"provider US 出口：{provider_probe.ip} / {provider_probe.country_code} {provider_probe.country}。")
+            emit("proxy", f"provider {provider_label} 出口：{provider_probe.ip} / {provider_probe.country_code} {provider_probe.country}。")
             emit("stripe_init", "正在请求 Stripe init。")
         try:
             init_payload = stripe_init(checkout["cs_id"], attempt_req, proxy_override=provider_proxy, checkout=checkout)
@@ -1531,12 +1621,29 @@ def health() -> dict[str, bool]:
 
 @app.post("/api/check-proxy", response_model=ProxyCheckResponse)
 def check_proxy(req: ProxyCheckRequest) -> ProxyCheckResponse:
-    provider_proxy = req.us_proxy
+    jp_proxy = str(req.jp_proxy or "").strip()
+    provider_proxy = str(req.us_proxy or "").strip()
+    jp_proxy_normalized = normalize_proxy_url(jp_proxy)
+    provider_proxy_normalized = normalize_proxy_url(provider_proxy) if provider_proxy else jp_proxy_normalized
+    single_proxy = provider_proxy_normalized == jp_proxy_normalized
+
     results = [
-        probe_proxy("checkout/approve JP", req.jp_proxy, "JP", required=True),
-        probe_proxy("provider US", provider_proxy, "US", required=True),
+        probe_proxy("checkout/approve JP", jp_proxy_normalized, "JP", required=True),
     ]
-    mark_same_exit(results)
+    if single_proxy:
+        results.append(
+            ProxyProbeResult(
+                ok=True,
+                label="provider (共享 JP)",
+                proxy=provider_proxy_normalized,
+                ip=results[0].ip,
+                country=results[0].country,
+                country_code=results[0].country_code,
+            )
+        )
+    else:
+        results.append(probe_proxy("provider US", provider_proxy_normalized, "US", required=True))
+        mark_same_exit(results)
     return ProxyCheckResponse(ok=all(item.ok for item in results), results=results)
 
 
@@ -2057,6 +2164,9 @@ def summarize_combo_failure(detail: str) -> str:
 def combo_attempt_order(checkout_country: str, pm_country: str) -> list[tuple[str, str]]:
     ordered = [
         (normalize_country(checkout_country), normalize_country(pm_country)),
+        ("AU", "AU"),
+        ("AU", "US"),
+        ("US", "AU"),
         ("DE", "DE"),
         ("DE", "US"),
         ("US", "DE"),
@@ -2121,35 +2231,51 @@ def run_single_combo(
 
     checkout_country = effective_country(req)
     pm_country = effective_payment_method_country(req)
-    flow_type = "paypal_de" if checkout_country == "DE" else "paypal_jp"
+    if checkout_country == "DE":
+        flow_type = "paypal_de"
+    elif checkout_country == "AU":
+        flow_type = "paypal_au"
+    else:
+        flow_type = "paypal_jp"
+    # Determine provider proxy country for display
+    base_proxy = provider_stage_proxy(req)
+    uses_dedicated_us = bool(str(req.us_proxy or "").strip())
+    provider_label = "US" if uses_dedicated_us else "JP（共享）"
+    rotate_country = "US" if uses_dedicated_us else "JP"
+
     log(
         "billing",
         f"当前组合：checkout账单={checkout_country}/{currency_for_country(checkout_country)}，"
-        f"PM账单={pm_country}，provider代理=US。",
+        f"PM账单={pm_country}，provider代理={provider_label}。",
     )
-    log("proxy", "检测 provider US 出口；checkout/approve JP 会在对应阶段检测。")
+    if uses_dedicated_us:
+        log("proxy", "检测 provider US 出口；checkout/approve JP 会在对应阶段检测。")
+    else:
+        log("proxy", "单代理模式：provider 复用 JP 出口，跳过 US 检测。")
+
     run_req = req
     proxy_error = ""
-    base_proxy = provider_stage_proxy(req)
-    rotated = rotate_kookeey_proxy_session(base_proxy, "US")
+    rotated = rotate_kookeey_proxy_session(base_proxy, rotate_country)
     can_rotate = rotated != base_proxy
     max_attempts = 5 if can_rotate else 1
     for attempt in range(1, max_attempts + 1):
         if can_rotate:
-            run_req = req.model_copy(update={"us_proxy": rotate_kookeey_proxy_session(base_proxy, "US")})
-            log("proxy", f"provider US 第 {attempt}/{max_attempts} 次：自动轮换粘性 session。")
+            run_req = req.model_copy(
+                update={"us_proxy": rotate_kookeey_proxy_session(base_proxy, rotate_country)}
+            )
+            log("proxy", f"provider {provider_label} 第 {attempt}/{max_attempts} 次：自动轮换粘性 session。")
         else:
             run_req = req.model_copy(update={"us_proxy": base_proxy})
-            if attempt == 1:
+            if attempt == 1 and uses_dedicated_us:
                 log("proxy", "provider US 非 Kookeey 格式代理，跳过 session 轮换，直接检测。")
         provider_probe = check_provider_proxy(run_req)
         if provider_probe.ok:
             break
-        proxy_error = provider_probe.error or "provider US 代理不可用"
-        log("proxy", f"provider US 不可用，准备更换：{proxy_error}")
+        proxy_error = provider_probe.error or f"provider {provider_label} 代理不可用"
+        log("proxy", f"provider {provider_label} 不可用，准备更换：{proxy_error}")
     else:
-        raise HTTPException(status_code=400, detail=f"provider US 代理检测未通过: {proxy_error}")
-    provider_country = "US"
+        raise HTTPException(status_code=400, detail=f"provider {provider_label} 代理检测未通过: {proxy_error}")
+    provider_country = "US" if uses_dedicated_us else "JP"
     log("proxy", f"provider 代理检测通过：{format_proxy_probe_summary([provider_probe])}。")
     log("checkout", "正在使用 JP 代理创建 ChatGPT checkout。")
     run_req, chatgpt, checkout = create_checkout_with_retry(run_req, emit=log)

@@ -519,6 +519,90 @@ class TestBillingForCountry:
         # Should have at least some variation
         assert len(names) >= 1
 
+    def test_au_billing_has_all_fields(self):
+        billing = billing_for_country("AU")
+        assert "name" in billing
+        assert "email" in billing
+        assert billing["country"] == "AU"
+        assert "line1" in billing
+        assert "city" in billing
+        assert "state" in billing
+        assert "postal_code" in billing
+
+    def test_au_billing_names_are_realistic(self):
+        billing = billing_for_country("AU")
+        # Names should be from the AU pool
+        assert isinstance(billing["name"], str)
+        assert " " in billing["name"]
+        first, last = billing["name"].split(" ", 1)
+        assert len(first) > 0
+        assert len(last) > 0
+
+    def test_au_billing_states_are_valid(self):
+        """AU addresses should use valid Australian state abbreviations."""
+        states = {billing_for_country("AU")["state"] for _ in range(20)}
+        valid_au_states = {"NSW", "VIC", "QLD", "WA", "SA", "TAS", "ACT", "NT"}
+        assert states.issubset(valid_au_states), f"Unexpected AU states: {states - valid_au_states}"
+
+
+# ───────────────────────────  AU data  ───────────────────────────
+
+
+class TestAuCurrency:
+    def test_au_currency_is_aud(self):
+        assert currency_for_country("AU") == "AUD"
+
+    def test_au_country_is_valid(self):
+        assert normalize_country("AU") == "AU"
+        assert normalize_country("au") == "AU"
+
+
+class TestAuLocale:
+    def test_en_au_locale(self):
+        assert locale_parts("en-AU") == ("en-AU", "en-AU")
+
+
+class TestAuComboOrder:
+    def test_au_au_is_first_combo(self):
+        order = combo_attempt_order("AU", "AU")
+        assert order[0] == ("AU", "AU")
+
+    def test_au_is_in_combos(self):
+        order = combo_attempt_order("US", "US")
+        combos = set(order)
+        assert ("AU", "AU") in combos
+        assert ("AU", "US") in combos or ("US", "AU") in combos
+
+
+# ───────────────────────────  single proxy mode  ───────────────────────────
+
+
+class TestSingleProxyMode:
+    """When no us_proxy is given, provider_stage_proxy should reuse JP proxy."""
+
+    def test_empty_proxy_check_returns_two_results(self):
+        response = client.post(
+            "/api/check-proxy",
+            json={"jp_proxy": "", "us_proxy": "", "billing_country": "AU"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["results"]) == 2
+        # First result is JP check (will fail — no proxy given)
+        assert data["results"][0]["label"] == "checkout/approve JP"
+        # Second result shares the JP check outcome
+        assert "provider" in data["results"][1]["label"].lower()
+
+    def test_check_proxy_with_only_jp_returns_both(self):
+        """Even with only jp_proxy, check-proxy returns 2 results (shared)."""
+        response = client.post(
+            "/api/check-proxy",
+            json={"jp_proxy": "http://user:pass@proxy:8080", "us_proxy": "", "billing_country": "US"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["results"]) == 2
+
 
 # ───────────────────────────  combo logic  ───────────────────────────
 
@@ -543,8 +627,8 @@ class TestComboAttemptOrder:
     def test_all_combos_valid_countries(self):
         order = combo_attempt_order("US", "US")
         for checkout, pm in order:
-            assert checkout in ("US", "DE")
-            assert pm in ("US", "DE")
+            assert checkout in ("US", "DE", "AU")
+            assert pm in ("US", "DE", "AU")
 
 
 class TestComboName:
