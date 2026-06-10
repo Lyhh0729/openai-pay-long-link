@@ -1047,9 +1047,19 @@ def is_external_url(value: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
+def _is_paypal_host(host: str) -> bool:
+    """Match paypal.com, *.paypal.com, and country-specific paypal.com.XX."""
+    return bool(re.match(r"^(?:.+\.)?paypal\.com(?:\.[a-z]{2,3})?$", host))
+
+
+def _is_paypalobjects_host(host: str) -> bool:
+    """Match paypalobjects.com and *.paypalobjects.com."""
+    return bool(re.match(r"^(?:.+\.)?paypalobjects\.com$", host))
+
+
 def is_paypal_url(value: str) -> bool:
     host = (urlsplit(value).netloc or "").lower()
-    return host == "paypal.com" or host.endswith(".paypal.com") or host == "paypalobjects.com" or host.endswith(".paypalobjects.com")
+    return _is_paypal_host(host) or _is_paypalobjects_host(host)
 
 
 def is_paypal_ba_approve_url(value: str) -> bool:
@@ -1058,7 +1068,7 @@ def is_paypal_ba_approve_url(value: str) -> bool:
     except Exception:
         return False
     host = (parsed.netloc or "").lower()
-    if not (host == "paypal.com" or host.endswith(".paypal.com")):
+    if not _is_paypal_host(host):
         return False
     path = parsed.path.rstrip("/").lower()
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
@@ -1290,16 +1300,27 @@ def stripe_payment_page_redirect_url(
     poll_count = 0
     while time.time() < deadline:
         poll_count += 1
-        if emit:
+        if emit and poll_count % 5 == 1:
             emit("redirect", f"等待 PayPal BA 链...第 {poll_count} 次。")
         response = stripe.get(f"https://api.stripe.com/v1/payment_pages/{cs_id}", params=params, timeout=DEFAULT_TIMEOUT)
         if response.status_code == 200:
             payload = response.json() or {}
             redirect_url = extract_redirect_to_url(payload)
             if redirect_url:
-                if emit:
-                    emit("redirect", "轮询响应发现 PayPal 跳转候选。")
-                return redirect_url
+                if is_paypal_ba_approve_url(redirect_url):
+                    if emit:
+                        emit("redirect", "轮询命中 PayPal BA approve 链！")
+                    return redirect_url
+                if emit and (poll_count == 1 or poll_count % 5 == 0):
+                    emit("redirect", f"发现 PayPal 跳转候选但非 BA approve：{redirect_url[:200]}")
+            else:
+                # Log what URLs we ARE finding to help debugging
+                all_urls = collect_urls(payload)
+                non_resource = [u for u in all_urls if not is_ignored_resource_url(u)]
+                if emit and poll_count == 1:
+                    emit("redirect", f"初始轮询：找到 {len(all_urls)} 个 URL，非资源 {len(non_resource)} 个。")
+                if non_resource and emit and poll_count % 10 == 0:
+                    emit("redirect", f"轮询第 {poll_count} 次，非资源 URL: {non_resource[0][:200]}")
             submission = find_submission_attempt(payload)
             if submission.get("state") == "requires_approval":
                 raise StripeRequiresApproval("payment page requires ChatGPT approval")
