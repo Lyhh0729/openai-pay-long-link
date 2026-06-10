@@ -563,15 +563,13 @@ class TestAuLocale:
 
 
 class TestAuComboOrder:
-    def test_au_au_is_first_combo(self):
+    def test_au_au_is_only_combo(self):
         order = combo_attempt_order("AU", "AU")
-        assert order[0] == ("AU", "AU")
+        assert order == [("AU", "AU")]
 
-    def test_au_is_in_combos(self):
+    def test_us_us_is_only_combo(self):
         order = combo_attempt_order("US", "US")
-        combos = set(order)
-        assert ("AU", "AU") in combos
-        assert ("AU", "US") in combos or ("US", "AU") in combos
+        assert order == [("US", "US")]
 
 
 # ───────────────────────────  single proxy mode  ───────────────────────────
@@ -610,19 +608,23 @@ class TestSingleProxyMode:
 class TestComboAttemptOrder:
     def test_default_us_us(self):
         order = combo_attempt_order("US", "US")
-        assert len(order) >= 1
+        assert len(order) == 1
         assert order[0] == ("US", "US")
 
     def test_de_de(self):
         order = combo_attempt_order("DE", "DE")
         assert order[0] == ("DE", "DE")
+        assert len(order) == 1
+
+    def test_au_au(self):
+        order = combo_attempt_order("AU", "AU")
+        assert order[0] == ("AU", "AU")
+        assert len(order) == 1
 
     def test_no_duplicates(self):
         order = combo_attempt_order("US", "DE")
-        seen = set()
-        for item in order:
-            assert item not in seen, f"Duplicate combo: {item}"
-            seen.add(item)
+        assert len(order) == 1
+        assert order == [("US", "DE")]
 
     def test_all_combos_valid_countries(self):
         order = combo_attempt_order("US", "US")

@@ -32,7 +32,7 @@ STRIPE_VERSION_FULL = "2025-03-31.basil; checkout_server_update_beta=v1; checkou
 DEFAULT_TIMEOUT = 30
 CHATGPT_TIMEOUT = 45
 CHATGPT_RETRY_ATTEMPTS = 5
-PROVIDER_RETRY_ATTEMPTS = 3
+PROVIDER_RETRY_ATTEMPTS = 1
 BASE_DIR = Path(__file__).resolve().parent
 PUBLIC_DIR = BASE_DIR / "public"
 LOG_DIR = BASE_DIR / "logs"
@@ -1239,6 +1239,34 @@ def find_submission_attempt(payload: Any) -> dict[str, Any]:
     return {}
 
 
+def extract_intent_id(payload: Any) -> tuple[str, str]:
+    """Return (intent_type, intent_id) from a Stripe confirm / payment-page response."""
+    if not isinstance(payload, dict):
+        return "", ""
+    for key in ("payment_intent", "setup_intent"):
+        val = payload.get(key)
+        if isinstance(val, str) and val.strip():
+            return key, val.strip()
+        if isinstance(val, dict):
+            id_val = str(val.get("id") or "").strip()
+            if id_val:
+                return key, id_val
+    return "", ""
+
+
+def fetch_intent_redirect_url(stripe: Any, intent_type: str, intent_id: str) -> str:
+    """Fetch a PaymentIntent / SetupIntent and return its redirect_to_url if present."""
+    if not intent_type or not intent_id:
+        return ""
+    try:
+        resp = stripe.get(f"https://api.stripe.com/v1/{intent_type}s/{intent_id}", timeout=DEFAULT_TIMEOUT)
+        if resp.status_code == 200:
+            return extract_redirect_to_url(resp.json() or {})
+    except Exception:
+        pass
+    return ""
+
+
 class StripeRequiresApproval(Exception):
     pass
 
@@ -1407,6 +1435,8 @@ def redirect_url_after_confirm(
     ctx: dict[str, Any],
     checkout: dict[str, Any],
     req: LongLinkRequest,
+    intent_type: str = "",
+    intent_id: str = "",
     emit: Any | None = None,
 ) -> str:
     if emit:
@@ -1420,7 +1450,19 @@ def redirect_url_after_confirm(
             emit("approve", "Stripe 要求 ChatGPT approve，正在使用 JP 代理提交 approve。")
         chatgpt = chatgpt_approve_with_retry(req, cs_id, checkout, emit=emit)
         if emit:
-            emit("approve", "ChatGPT approve 已通过，继续轮询 PayPal BA approve 跳转。")
+            emit("approve", "ChatGPT approve 已通过，尝试直接获取 PaymentIntent 跳转。")
+        # Try direct PaymentIntent fetch first (much faster than polling)
+        direct_url = fetch_intent_redirect_url(stripe, intent_type, intent_id)
+        if is_paypal_ba_approve_url(direct_url):
+            if emit:
+                emit("redirect", "直接从 PaymentIntent 获取到 PayPal BA approve 链！")
+            return direct_url
+        if direct_url and is_paypal_url(direct_url):
+            if emit:
+                emit("redirect", f"PaymentIntent 发现 PayPal URL：{direct_url[:200]}，交由 resolve 跟随。")
+            return direct_url
+        if emit:
+            emit("redirect", "PaymentIntent 未直接返回 PayPal 链接，回退到 payment_pages 轮询。")
         return stripe_payment_page_redirect_url(stripe, cs_id, stripe_pk, req, ctx, timeout_seconds=45, emit=emit)
     if submission.get("state") == "failed":
         diagnostics = stripe_payload_diagnostics(confirm_payload, ctx)
@@ -1434,7 +1476,18 @@ def redirect_url_after_confirm(
             emit("approve", "轮询 payment page 发现 requires_approval，正在提交 ChatGPT approve。")
         chatgpt = chatgpt_approve_with_retry(req, cs_id, checkout, emit=emit)
         if emit:
-            emit("approve", "ChatGPT approve 已通过，继续轮询 PayPal BA approve 跳转。")
+            emit("approve", "ChatGPT approve 已通过，尝试直接获取 PaymentIntent 跳转。")
+        direct_url = fetch_intent_redirect_url(stripe, intent_type, intent_id)
+        if is_paypal_ba_approve_url(direct_url):
+            if emit:
+                emit("redirect", "直接从 PaymentIntent 获取到 PayPal BA approve 链！")
+            return direct_url
+        if direct_url and is_paypal_url(direct_url):
+            if emit:
+                emit("redirect", f"PaymentIntent 发现 PayPal URL：{direct_url[:200]}，交由 resolve 跟随。")
+            return direct_url
+        if emit:
+            emit("redirect", "PaymentIntent 未直接返回 PayPal 链接，回退到 payment_pages 轮询。")
         return stripe_payment_page_redirect_url(stripe, cs_id, stripe_pk, req, ctx, timeout_seconds=45, emit=emit)
 
 
@@ -1495,6 +1548,8 @@ def create_provider_link(
     )
     if emit:
         emit("confirm", "Stripe confirm 已返回，正在解析 PayPal 跳转。")
+    # Extract payment/setup intent ID for direct fetch after approve
+    intent_type, intent_id = extract_intent_id(confirm_payload)
     stripe_redirect_url = redirect_url_after_confirm(
         chatgpt,
         stripe,
@@ -1504,6 +1559,8 @@ def create_provider_link(
         ctx,
         checkout,
         req,
+        intent_type=intent_type,
+        intent_id=intent_id,
         emit=emit,
     )
     if emit:
@@ -2134,24 +2191,8 @@ def summarize_combo_failure(detail: str) -> str:
 
 
 def combo_attempt_order(checkout_country: str, pm_country: str) -> list[tuple[str, str]]:
-    ordered = [
-        (normalize_country(checkout_country), normalize_country(pm_country)),
-        ("AU", "AU"),
-        ("AU", "US"),
-        ("US", "AU"),
-        ("DE", "DE"),
-        ("DE", "US"),
-        ("US", "DE"),
-        ("US", "US"),
-    ]
-    result: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for item in ordered:
-        if item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result
+    # Only try exactly what the user selected — one shot, no fallback waste
+    return [(normalize_country(checkout_country), normalize_country(pm_country))]
 
 
 def short_error(detail: str, limit: int = 260) -> str:
