@@ -633,6 +633,10 @@ def create_checkout(req: LongLinkRequest, chatgpt_session: Any | None = None) ->
             "country": billing_country,
             "currency": currency,
         },
+        "promo_campaign": {
+            "promo_campaign_id": "plus-1-month-free",
+            "is_coupon_from_query_param": False,
+        },
         "checkout_ui_mode": checkout_ui_mode,
     }
     headers = {
