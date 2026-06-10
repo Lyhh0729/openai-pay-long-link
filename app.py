@@ -1551,8 +1551,11 @@ def create_provider_link_with_retry(
             init_amount = expected_amount(init_payload)
             if init_amount not in ("0", ""):
                 raise HTTPException(
-                    status_code=400,
-                    detail=f"结账金额非 $0（当前金额: {init_amount}），此 access token 无免费试用资格，请更换 token 或确认账号。",
+                    status_code=502,
+                    detail=(
+                        f"promo 金额非 $0（当前: {init_amount}），"
+                        f"免费试用仅限 USD checkout，将尝试回退到 US 账单组合。"
+                    ),
                 )
             if emit:
                 emit("stripe_init", f"结账金额确认：$0（免费试用），继续。")
@@ -2128,7 +2131,11 @@ def combo_attempt_order(checkout_country: str, pm_country: str) -> list[tuple[st
     checkout = normalize_country(checkout_country)
     pm = normalize_country(pm_country)
     ordered: list[tuple[str, str]] = [(checkout, pm)]
-    # 仅 US/DE 保留传统组合回退
+    # AU 免费试用需 USD checkout 才能触发 promo
+    if checkout == "AU":
+        ordered.append(("US", pm))
+    ordered.append(("US", "US"))
+    # US/DE 保留传统组合回退
     if checkout in ("US", "DE"):
         ordered.extend([
             ("DE", "DE"),

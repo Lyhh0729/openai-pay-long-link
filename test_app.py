@@ -563,10 +563,11 @@ class TestAuLocale:
 
 
 class TestAuComboOrder:
-    def test_au_au_is_only(self):
-        # AU has no legacy combos, only the selected combo
+    def test_au_has_us_fallback(self):
         order = combo_attempt_order("AU", "AU")
-        assert order == [("AU", "AU")]
+        assert ("AU", "AU") in order
+        assert ("US", "AU") in order
+        assert ("US", "US") in order
 
 
 # ───────────────────────────  single proxy mode  ───────────────────────────
@@ -608,9 +609,10 @@ class TestComboAttemptOrder:
         assert order[0] == ("US", "US")
         assert ("DE", "DE") in order
 
-    def test_au_au_no_fallback(self):
-        # AU has no legacy fallback combos
-        assert combo_attempt_order("AU", "AU") == [("AU", "AU")]
+    def test_au_has_us_fb(self):
+        order = combo_attempt_order("AU", "AU")
+        assert ("US", "AU") in order
+        assert ("US", "US") in order
 
     def test_de_de(self):
         order = combo_attempt_order("DE", "DE")
