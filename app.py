@@ -661,12 +661,15 @@ def create_checkout(req: LongLinkRequest, chatgpt_session: Any | None = None) ->
     cs_id = data.get("checkout_session_id") or data.get("session_id") or data.get("id")
     if not cs_id or not str(cs_id).startswith("cs_"):
         raise HTTPException(status_code=502, detail=f"checkout response missing cs_id: {data}")
+    # The checkout response may already contain the PayPal BA approve URL.
+    checkout_url = str(data.get("url") or "").strip()
     return {
         "cs_id": str(cs_id),
         "processor_entity": extract_processor_entity(data),
         "stripe_publishable_key": extract_stripe_publishable_key(data),
         "billing_country": billing_country,
         "currency": currency,
+        "checkout_url": checkout_url,
     }
 
 
@@ -2233,6 +2236,30 @@ def run_single_combo(
     log("checkout", "正在使用 JP 代理创建 ChatGPT checkout。")
     run_req, chatgpt, checkout = create_checkout_with_retry(run_req, emit=log)
     log("checkout", f"checkout 创建成功：{checkout['cs_id']} / {checkout['billing_country']} / {checkout['currency']}。")
+
+    # Fast path: checkout response may already contain the PayPal BA URL.
+    checkout_url = str(checkout.get("checkout_url") or "").strip()
+    if is_paypal_ba_approve_url(checkout_url):
+        log("done", "checkout 响应直接包含 PayPal BA approve 链，跳过 Stripe 流程！")
+        return LongLinkResponse(
+            ok=True,
+            cs_id=checkout["cs_id"],
+            processor_entity=checkout["processor_entity"],
+            billing_country=checkout["billing_country"],
+            payment_method_country=pm_country,
+            currency=checkout["currency"],
+            payment_locale=locale_parts(run_req.payment_locale)[0],
+            flow_type=flow_type,
+            payment_method_type="paypal",
+            payment_method_id="",
+            stripe_redirect_url=checkout_url,
+            provider_redirect_url=checkout_url,
+            fallback=fallback,
+            provider_error="; ".join(prior_failures),
+            stripe_hosted_url="",
+            long_url=checkout_url,
+        )
+
     stripe_key_source = (
         "手动填写"
         if run_req.stripe_publishable_key.strip()
