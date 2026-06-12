@@ -627,7 +627,6 @@ def create_checkout(req: LongLinkRequest, chatgpt_session: Any | None = None) ->
     currency = currency_for_country(billing_country)
     checkout_ui_mode = (req.checkout_ui_mode or "custom").strip() or "custom"
     body = {
-        "entry_point": "all_plans_pricing_modal",
         "plan_name": "chatgptplusplan",
         "billing_details": {
             "country": billing_country,
@@ -2239,6 +2238,10 @@ def run_single_combo(
 
     # Fast path: checkout response may already contain the PayPal BA URL.
     checkout_url = str(checkout.get("checkout_url") or "").strip()
+    if checkout_url:
+        log("checkout", f"checkout 响应包含 URL：{checkout_url[:200]}")
+    else:
+        log("checkout", "checkout 响应未包含 PayPal URL，将走 Stripe 完整流程。")
     if is_paypal_ba_approve_url(checkout_url):
         log("done", "checkout 响应直接包含 PayPal BA approve 链，跳过 Stripe 流程！")
         return LongLinkResponse(
