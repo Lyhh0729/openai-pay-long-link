@@ -2180,10 +2180,8 @@ def summarize_combo_failure(detail: str) -> str:
 def combo_attempt_order(checkout_country: str, pm_country: str) -> list[tuple[str, str]]:
     checkout = normalize_country(checkout_country)
     pm = normalize_country(pm_country)
-    ordered: list[tuple[str, str]] = [(checkout, pm)]
-    # AU 免费试用需 USD checkout 才能触发 promo
-    if checkout == "AU":
-        ordered.append(("US", pm))
+    # Free trial only works with USD checkout.  Skip non-USD combos entirely.
+    ordered: list[tuple[str, str]] = [("US", pm)]
     ordered.append(("US", "US"))
     # US/DE 保留传统组合回退
     if checkout in ("US", "DE"):

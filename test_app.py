@@ -563,11 +563,12 @@ class TestAuLocale:
 
 
 class TestAuComboOrder:
-    def test_au_has_us_fallback(self):
+    def test_au_skips_aud(self):
+        # AU checkout skipped — free trial requires USD
         order = combo_attempt_order("AU", "AU")
-        assert ("AU", "AU") in order
-        assert ("US", "AU") in order
+        assert order[0] == ("US", "AU")
         assert ("US", "US") in order
+        assert ("AU", "AU") not in order
 
 
 # ───────────────────────────  single proxy mode  ───────────────────────────
@@ -609,14 +610,13 @@ class TestComboAttemptOrder:
         assert order[0] == ("US", "US")
         assert ("DE", "DE") in order
 
-    def test_au_has_us_fb(self):
+    def test_au_starts_with_us(self):
         order = combo_attempt_order("AU", "AU")
-        assert ("US", "AU") in order
-        assert ("US", "US") in order
+        assert order[0] == ("US", "AU")  # Skip AUD, go straight to USD
 
-    def test_de_de(self):
+    def test_de_starts_with_us(self):
         order = combo_attempt_order("DE", "DE")
-        assert order[0] == ("DE", "DE")
+        assert order[0] == ("US", "DE")  # Always start with USD checkout
 
     def test_us_de(self):
         order = combo_attempt_order("US", "DE")
