@@ -2062,8 +2062,8 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
                 raise
             log("combo", f"组合 {combo_label} 未拿到 BA approve：{short_detail}")
             if index < len(combos):
-                next_checkout, next_pm = combos[index]
-                log("combo", f"自动切换下一个组合：checkout={next_checkout}，PM={next_pm}。")
+                next_checkout, next_pm, _next_proxy = combos[index]
+                log("combo", f"自动切换下一个组合：checkout={next_checkout}，PM={next_pm}，proxy={_next_proxy[2]}。")
         except Exception as exc:
             if not is_retryable_network_error(exc):
                 raise
@@ -2085,8 +2085,8 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
             )
             log("combo", f"组合 {combo_label} 网络异常，进入下一个组合：{short_detail}")
             if index < len(combos):
-                next_checkout, next_pm = combos[index]
-                log("combo", f"自动切换下一个组合：checkout={next_checkout}，PM={next_pm}。")
+                next_checkout, next_pm, _next_proxy = combos[index]
+                log("combo", f"自动切换下一个组合：checkout={next_checkout}，PM={next_pm}，proxy={_next_proxy[2]}。")
 
     last_detail = failures[-1] if failures else "没有可用组合"
     log("summary", format_combo_results(combo_results))
