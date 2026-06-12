@@ -16,6 +16,7 @@ from app import (
     combo_name,
     compact_log_message,
     currency_for_country,
+    emit_combo_result,
     effective_country,
     extract_processor_entity,
     extract_redirect_to_url,
@@ -35,6 +36,7 @@ from app import (
     rotate_kookeey_proxy_session,
     short_error,
     stripe_checkout_long_url,
+    stripe_payload_diagnostics,
     to_openai_pay_url,
 )
 
@@ -668,6 +670,52 @@ class TestCompactLogMessage:
 
     def test_empty_message(self):
         assert compact_log_message("step", "") == ""
+
+    def test_current_combo_keeps_dynamic_provider(self):
+        msg = "当前组合：checkout账单=US/USD，PM账单=AU，provider代理=AU。"
+        assert compact_log_message("billing", msg) == "账单 US/USD，PM AU，provider AU"
+
+    def test_diagnostic_message_keeps_key_failure_fields(self):
+        msg = (
+            "confirm 诊断：keys=[approval_method], submission_state=failed, submission_reason=payment_intent_authentication_failure, "
+            "submission_code=authentication_required, submission_message=Action required, approval_method=manual, "
+            "redirect_candidate=无"
+        )
+        compacted = compact_log_message("redirect", msg)
+        assert "state=failed" in compacted
+        assert "approval=manual" in compacted
+
+
+class TestStripePayloadDiagnostics:
+    def test_includes_approval_and_redirect_fields(self):
+        payload = {
+            "approval_method": "manual",
+            "next_action": {"type": "redirect_to_url", "redirect_to_url": {"url": "https://www.paypal.com/agreements/approve?ba_token=ABC"}},
+            "submission_attempt": {
+                "state": "requires_approval",
+                "error": {"message": "Action required", "code": "authentication_required"},
+            },
+        }
+        result = stripe_payload_diagnostics(payload, {"elements_session_id": "elements_session_123"})
+        assert "approval_method=manual" in result
+        assert "next_action_type=redirect_to_url" in result
+        assert "redirect_candidate=https://www.paypal.com/agreements/approve?ba_token=ABC" in result
+
+
+class TestEmitComboResult:
+    def test_uses_actual_provider_country_and_locale(self):
+        events = []
+
+        def capture(step, message, **extra):
+            events.append((step, message, extra))
+
+        emit_combo_result(capture, 2, "US", "AU", "AU", "en-AU", "失败", 3210, "未解析到 BA approve 链")
+        assert len(events) == 1
+        step, message, extra = events[0]
+        assert step == "combo_result"
+        assert "US / AU / USD / en-AU / JP / AU" in message
+        assert extra["provider_proxy_country"] == "AU"
+        assert extra["locale"] == "en-AU"
 
 
 class TestIsRetryableNetworkError:

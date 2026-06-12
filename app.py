@@ -1143,6 +1143,41 @@ def extract_redirect_to_url(payload: Any) -> str:
     )
 
 
+def payload_approval_method(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    value = payload.get("approval_method")
+    if isinstance(value, (str, int, float, bool)):
+        return str(value).strip()
+    if isinstance(value, dict):
+        return str(value.get("type") or value.get("method") or value.get("name") or "").strip()
+    return ""
+
+
+def payload_next_action_type(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    value = payload.get("next_action")
+    if isinstance(value, dict):
+        return str(value.get("type") or "").strip()
+    return ""
+
+
+def diagnostic_url_candidates(payload: Any, limit: int = 2) -> list[str]:
+    urls = collect_urls(payload)
+    found: list[str] = []
+    seen: set[str] = set()
+    for item in urls:
+        url = str(item or "").strip()
+        if not url or url in seen or is_ignored_resource_url(url):
+            continue
+        seen.add(url)
+        found.append(url)
+        if len(found) >= max(1, int(limit or 1)):
+            break
+    return found
+
+
 def stripe_payload_diagnostics(payload: Any, ctx: dict[str, Any]) -> str:
     if not isinstance(payload, dict):
         return f"payload_type={type(payload).__name__}"
@@ -1164,11 +1199,17 @@ def stripe_payload_diagnostics(payload: Any, ctx: dict[str, Any]) -> str:
     )
     submission_code = first_non_empty(submission_fields, "code", "decline_code", "failure_code")
     submission_message = first_non_empty(submission_fields, "message", "failure_message", "error")
+    approval_method = payload_approval_method(payload)
+    next_action_type = payload_next_action_type(payload)
+    redirect_candidate = extract_redirect_to_url(payload)
+    candidate_urls = diagnostic_url_candidates(payload)
     return (
         f"keys=[{keys}], urls={len(urls)}, paypal_urls={paypal_count}, ba_approve_urls={ba_count}, "
         f"ignored_resource_urls={ignored_count}, submission_attempt={bool(submission)}, submission_state={submission_state or '未知'}, "
         f"submission_reason={submission_reason or '无'}, submission_code={submission_code or '无'}, "
-        f"submission_message={submission_message or '无'}, "
+        f"submission_message={submission_message or '无'}, approval_method={approval_method or '无'}, "
+        f"next_action_type={next_action_type or '无'}, redirect_candidate={short_error(redirect_candidate, 120) or '无'}, "
+        f"candidate_urls={' | '.join(short_error(item, 90) for item in candidate_urls) or '无'}, "
         f"ctx_session={ctx.get('elements_session_id') or ''}"
     )
 
@@ -1298,6 +1339,8 @@ def stripe_payment_page_redirect_url(
         response = stripe.get(f"https://api.stripe.com/v1/payment_pages/{cs_id}", params=params, timeout=DEFAULT_TIMEOUT)
         if response.status_code == 200:
             payload = response.json() or {}
+            if emit and poll_count == 1:
+                emit("redirect", f"payment page 诊断：{stripe_payload_diagnostics(payload, ctx)}")
             redirect_url = extract_redirect_to_url(payload)
             if redirect_url:
                 if emit:
@@ -1428,6 +1471,8 @@ def redirect_url_after_confirm(
     redirect_url = extract_redirect_to_url(confirm_payload)
     if redirect_url:
         return redirect_url
+    if emit:
+        emit("redirect", f"confirm 诊断：{stripe_payload_diagnostics(confirm_payload, ctx)}")
     submission = find_submission_attempt(confirm_payload)
     if submission.get("state") == "requires_approval":
         if emit:
@@ -1724,28 +1769,51 @@ def compact_log_message(step: str, message: str) -> str:
     if "开始执行 PP 链提取流程" in text:
         return "开始执行，组合回退已开启"
     if "当前组合：" in text:
-        match = re.search(r"checkout账单=([A-Z]{2})/([A-Z]{3})，PM账单=([A-Z]{2})", text)
-        return f"账单 {match.group(1)}/{match.group(2)}，PM {match.group(3)}，provider US" if match else short_error(text, 80)
-    if "检测 provider US 出口" in text:
-        return "预检 US，JP 分阶段检测"
-    if "provider US 第" in text and "自动轮换" in text:
-        match = re.search(r"provider US 第\s+(\d+/\d+)", text)
-        return f"轮换 US 节点 {match.group(1)}" if match else "轮换 US 节点"
-    if "provider 第" in text and "轮换 US session" in text:
-        match = re.search(r"provider 第\s+(\d+/\d+)", text)
-        return f"provider 重试 {match.group(1)}，换 US 节点" if match else "provider 换 US 节点"
+        match = re.search(r"checkout账单=([A-Z]{2})/([A-Z]{3})，PM账单=([A-Z]{2})，provider代理=([A-Z]{2})", text)
+        return (
+            f"账单 {match.group(1)}/{match.group(2)}，PM {match.group(3)}，provider {match.group(4)}"
+            if match else short_error(text, 90)
+        )
+    if "检测 provider " in text and "出口" in text:
+        match = re.search(r"检测 provider\s+([A-Z]{2})\s+出口", text)
+        return f"预检 {match.group(1)}，JP 分阶段检测" if match else "预检 provider，JP 分阶段检测"
+    if "provider " in text and "自动轮换粘性 session" in text:
+        match = re.search(r"provider\s+([A-Z]{2})\s+第\s+(\d+/\d+)", text)
+        return f"轮换 {match.group(1)} 节点 {match.group(2)}" if match else "轮换 provider 节点"
     if "自动切换下一个组合" in text:
-        match = re.search(r"checkout=([A-Z]{2})，PM=([A-Z]{2})", text)
-        return f"切换组合：{match.group(1)}+{match.group(2)}" if match else "切换下一个组合"
+        match = re.search(r"checkout=([A-Z]{2})，PM=([A-Z]{2})，proxy=([A-Z]{2})", text)
+        return (
+            f"切换组合：{match.group(1)}+{match.group(2)}@{match.group(3)}"
+            if match else "切换下一个组合"
+        )
     if "未拿到 BA approve" in text:
-        match = re.search(r"组合\s+([A-Z]{2}\+[A-Z]{2})", text)
+        match = re.search(r"组合\s+([A-Z]{2}\+[A-Z]{2}(?:@[A-Z]{2})?)", text)
         return f"组合 {match.group(1)} 失败，未拿到 BA 链" if match else "当前组合失败，未拿到 BA 链"
     if "失败且不可回退" in text:
-        match = re.search(r"组合\s+([A-Z]{2}\+[A-Z]{2})", text)
+        match = re.search(r"组合\s+([A-Z]{2}\+[A-Z]{2}(?:@[A-Z]{2})?)", text)
         return f"组合 {match.group(1)} 失败，停止运行" if match else "组合失败，停止运行"
     if "Stripe submission 已失败" in text:
         reason = re.search(r"reason=([^，。]+)", text)
         return f"Stripe 拒绝：{reason.group(1)}" if reason else "Stripe 拒绝付款"
+    if text.startswith("confirm 诊断：") or text.startswith("payment page 诊断："):
+        prefix = "confirm 诊断" if text.startswith("confirm 诊断：") else "payment page 诊断"
+        state = re.search(r"submission_state=([^,，]+)", text)
+        reason = re.search(r"submission_reason=([^,，]+)", text)
+        code = re.search(r"submission_code=([^,，]+)", text)
+        approval = re.search(r"approval_method=([^,，]+)", text)
+        redirect = re.search(r"redirect_candidate=([^,，]+)", text)
+        parts = []
+        if state:
+            parts.append(f"state={state.group(1)}")
+        if reason:
+            parts.append(f"reason={reason.group(1)}")
+        if code:
+            parts.append(f"code={code.group(1)}")
+        if approval:
+            parts.append(f"approval={approval.group(1)}")
+        if redirect:
+            parts.append(f"redirect={redirect.group(1)}")
+        return f"{prefix}：" + ("，".join(parts) if parts else short_error(text, 180))
     if "Stripe key 来源" in text:
         match = re.search(r"Stripe key 来源：([^；。]+)", text)
         return f"Stripe key：{match.group(1)}" if match else "Stripe key 已确认"
@@ -1765,11 +1833,17 @@ def compact_log_message(step: str, message: str) -> str:
     if "继续轮询 PayPal BA approve 跳转" in text:
         return "继续轮询 BA 链"
     if "provider 代理检测通过" in text:
-        match = re.search(r"provider US:\s*([^/。]+)\s*/\s*([A-Z]{2})", text)
-        return f"US 预检通过：{match.group(1).strip()} / {match.group(2)}" if match else "US 预检通过"
-    if "provider US 出口" in text:
-        match = re.search(r"provider US 出口：([^/。]+)\s*/\s*([A-Z]{2})", text)
-        return f"US 出口：{match.group(1).strip()} / {match.group(2)}" if match else "US 出口通过"
+        match = re.search(r"provider\s+([A-Z]{2}):\s*([^/。]+)\s*/\s*([A-Z]{2})", text)
+        return (
+            f"{match.group(1)} 预检通过：{match.group(2).strip()} / {match.group(3)}"
+            if match else "provider 预检通过"
+        )
+    if "provider " in text and "出口：" in text:
+        match = re.search(r"provider\s+([A-Z]{2})\s+出口：([^/。]+)\s*/\s*([A-Z]{2})", text)
+        return (
+            f"{match.group(1)} 出口：{match.group(2).strip()} / {match.group(3)}"
+            if match else "provider 出口通过"
+        )
     if "checkout JP 出口" in text:
         match = re.search(r"checkout JP 出口：([^/。]+)\s*/\s*([A-Z]{2})", text)
         return f"JP 出口：{match.group(1).strip()} / {match.group(2)}" if match else "JP 出口通过"
@@ -1782,7 +1856,8 @@ def compact_log_message(step: str, message: str) -> str:
     if "正在使用 JP 代理创建 ChatGPT checkout" in text:
         return "准备 checkout"
     if "正在切换到 provider 阶段代理" in text:
-        return "切换 provider US"
+        match = re.search(r"provider 阶段代理：([A-Z]{2})", text)
+        return f"切换 provider {match.group(1)}" if match else "切换 provider"
     if "正在创建 Stripe/Provider 会话" in text:
         return "创建 provider 会话"
     if "PayPal payment_method 创建成功" in text:
@@ -1793,20 +1868,24 @@ def compact_log_message(step: str, message: str) -> str:
         return "approve 成功"
     if "JP session 不可用" in text:
         return "JP 节点不可用，换节点"
-    if "provider US session 不可用" in text or "provider US 不可用" in text:
-        return "US 节点不可用，换节点"
+    if "provider " in text and ("session 不可用" in text or " 不可用" in text):
+        match = re.search(r"provider\s+([A-Z]{2})", text)
+        return f"{match.group(1)} 节点不可用，换节点" if match else "provider 节点不可用，换节点"
     if "provider 网络异常" in text:
-        return "provider 网络异常，换 US 节点"
-    if "provider US 代理检测未通过" in text:
-        return "provider US 代理检测失败"
+        match = re.search(r"更换\s+([A-Z]{2})\s+session", text)
+        return f"provider 网络异常，换 {match.group(1)} 节点" if match else "provider 网络异常，换节点"
+    if "provider " in text and "代理检测未通过" in text:
+        match = re.search(r"provider\s+([A-Z]{2})", text)
+        return f"provider {match.group(1)} 代理检测失败" if match else "provider 代理检测失败"
     if "代理检测未通过" in text:
         return "代理检测失败"
     if "网络超时/连接失败" in text:
         return "网络异常，换节点"
     if "正在检测 JP 出口" in text:
         return "检测 JP 出口"
-    if "正在检测 US 出口" in text:
-        return "检测 US 出口"
+    if "正在检测 " in text and " 出口" in text:
+        match = re.search(r"正在检测\s+([A-Z]{2})\s+出口", text)
+        return f"检测 {match.group(1)} 出口" if match else "检测 provider 出口"
     if "正在创建 ChatGPT checkout" in text:
         return "创建 checkout"
     if "正在请求 Stripe init" in text:
@@ -2034,6 +2113,8 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
                 index,
                 checkout_country,
                 pm_country,
+                proxy_country,
+                combo_req.payment_locale,
                 "成功",
                 int(combo_result["elapsed_ms"]),
             )
@@ -2052,6 +2133,8 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
                 index,
                 checkout_country,
                 pm_country,
+                proxy_country,
+                combo_req.payment_locale,
                 "失败",
                 int(combo_result["elapsed_ms"]),
                 combo_result["detail"],
@@ -2079,6 +2162,8 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
                 index,
                 checkout_country,
                 pm_country,
+                proxy_country,
+                combo_req.payment_locale,
                 "失败",
                 int(combo_result["elapsed_ms"]),
                 combo_result["detail"],
@@ -2118,6 +2203,8 @@ def emit_combo_result(
     index: int,
     checkout_country: str,
     pm_country: str,
+    provider_proxy_country: str,
+    locale: str,
     status: str,
     elapsed_ms: int,
     detail: str = "",
@@ -2125,9 +2212,11 @@ def emit_combo_result(
     if not emit:
         return
     status_text = "成功" if status == "成功" else "失败"
+    provider_country = (provider_proxy_country or "US").upper()
+    locale_text = locale_parts(locale)[0] if locale else "en-US"
     message = (
         f"组合测试：{checkout_country} / {pm_country} / {currency_for_country(checkout_country)} / "
-        f"en-US / JP / US"
+        f"{locale_text} / JP / {provider_country}"
     )
     emit(
         "combo_result",
@@ -2137,9 +2226,9 @@ def emit_combo_result(
         checkout_country=checkout_country,
         pm_country=pm_country,
         currency=currency_for_country(checkout_country),
-        locale="en-US",
+        locale=locale_text,
         checkout_proxy_country="JP",
-        provider_proxy_country="US",
+        provider_proxy_country=provider_country,
         status=status_text,
         detail=detail,
         combo_elapsed_ms=elapsed_ms,
