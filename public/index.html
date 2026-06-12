@@ -719,7 +719,12 @@
                   <div class="field" id="providerProxyField">
                     <label for="usProxy">美国代理 (US Proxy)</label>
                     <input id="usProxy" placeholder="http://user:pass@us-proxy.example.com:8080" />
-                    <div class="token-meta">美国 IP 代理地址（必填，PayPal 风控要求 IP 匹配账单地区）</div>
+                    <div class="token-meta">美国 IP 代理地址</div>
+                  </div>
+                  <div class="field">
+                    <label for="auProxy">澳大利亚代理 (AU Proxy)</label>
+                    <input id="auProxy" placeholder="选填：填写后自动多一个 AU 代理组合" />
+                    <div class="token-meta">澳大利亚 IP 代理地址（选填，匹配 AU 账单地区）</div>
                   </div>
                   <div class="field">
                     <label for="paymentLocale">语言环境 (Locale)</label>
@@ -980,6 +985,7 @@
         return {
           jp_proxy: $("jpProxy").value.trim(),
           us_proxy: $("usProxy").value.trim(),
+          au_proxy: $("auProxy").value.trim(),
           billing_country: $("billingCountry").value,
           payment_method_country: $("paymentMethodCountry").value,
         };
@@ -990,6 +996,7 @@
           accessToken,
           jp_proxy: $("jpProxy").value.trim(),
           us_proxy: $("usProxy").value.trim(),
+          au_proxy: $("auProxy").value.trim(),
           billing_country: $("billingCountry").value,
           payment_method_country: $("paymentMethodCountry").value,
           payment_locale: $("paymentLocale").value,
@@ -1054,6 +1061,7 @@
       function loadProxy() {
         $("jpProxy").value = localStorage.getItem("openai_pay_long_link_jp_proxy") || "";
         $("usProxy").value = localStorage.getItem("openai_pay_long_link_us_proxy") || "";
+        $("auProxy").value = localStorage.getItem("openai_pay_long_link_au_proxy") || "";
       }
 
       function setLinkEnabled(enabled) {
@@ -1383,13 +1391,16 @@
       $("saveProxy").addEventListener("click", () => {
         localStorage.setItem("openai_pay_long_link_jp_proxy", $("jpProxy").value.trim());
         localStorage.setItem("openai_pay_long_link_us_proxy", $("usProxy").value.trim());
+        localStorage.setItem("openai_pay_long_link_au_proxy", $("auProxy").value.trim());
         setStatus("代理已保存在本机浏览器。");
       });
       $("clearProxy").addEventListener("click", () => {
         localStorage.removeItem("openai_pay_long_link_jp_proxy");
         localStorage.removeItem("openai_pay_long_link_us_proxy");
+        localStorage.removeItem("openai_pay_long_link_au_proxy");
         $("jpProxy").value = "";
         $("usProxy").value = "";
+        $("auProxy").value = "";
         setStatus("已清除保存的代理。");
       });
       generateButton.addEventListener("click", generate);

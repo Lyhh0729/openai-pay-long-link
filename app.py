@@ -148,6 +148,7 @@ class LongLinkRequest(BaseModel):
     proxy: str = ""
     jp_proxy: str = ""
     us_proxy: str = ""
+    au_proxy: str = ""
     stripe_publishable_key: str = ""
     billing_country: str = "US"
     payment_method_country: str = "US"
@@ -179,6 +180,7 @@ class LongLinkResponse(BaseModel):
 class ProxyCheckRequest(BaseModel):
     jp_proxy: str = ""
     us_proxy: str = ""
+    au_proxy: str = ""
     billing_country: str = "US"
 
 
@@ -446,17 +448,45 @@ def probe_proxy(label: str, proxy: str, expected_country: str = "", required: bo
 
 def check_request_proxies(req: LongLinkRequest) -> list[ProxyProbeResult]:
     jp_proxy = checkout_stage_proxy(req)
-    provider_proxy = provider_stage_proxy(req)
     results = [
         probe_proxy("checkout/approve JP", jp_proxy, "JP", required=True),
     ]
-    results.append(probe_proxy("provider US", provider_proxy, "US", required=True))
+    for label, proxy_val, expected in _provider_proxy_options(req):
+        results.append(probe_proxy(label, proxy_val, expected, required=False))
     mark_same_exit(results)
     return results
 
 
-def check_provider_proxy(req: LongLinkRequest) -> ProxyProbeResult:
+def _provider_proxy_options(req: LongLinkRequest) -> list[tuple[str, str, str]]:
+    """Return list of (label, proxy_url, expected_country) for all available provider proxies."""
+    opts: list[tuple[str, str, str]] = []
+    us = str(req.us_proxy or "").strip()
+    au = str(req.au_proxy or "").strip()
+    if us:
+        opts.append(("provider US", normalize_proxy_url(us), "US"))
+    if au:
+        opts.append(("provider AU", normalize_proxy_url(au), "AU"))
+    if not opts:
+        fallback = provider_stage_proxy(req)
+        opts.append(("provider US", fallback, "US"))
+    return opts
+
+
+def check_provider_proxy_for(req: LongLinkRequest, country: str) -> ProxyProbeResult:
+    """Check a specific provider proxy by country ('US' or 'AU')."""
+    country = (country or "").upper()
+    if country == "AU":
+        au = str(req.au_proxy or "").strip()
+        if au:
+            return probe_proxy("provider AU", normalize_proxy_url(au), "AU", required=False)
+    us = str(req.us_proxy or "").strip()
+    if us:
+        return probe_proxy("provider US", normalize_proxy_url(us), "US", required=False)
     return probe_proxy("provider US", provider_stage_proxy(req), "US", required=True)
+
+
+def check_provider_proxy(req: LongLinkRequest) -> ProxyProbeResult:
+    return check_provider_proxy_for(req, "US")
 
 
 def mark_same_exit(results: list[ProxyProbeResult]) -> None:
@@ -1613,11 +1643,15 @@ def health() -> dict[str, bool]:
 
 @app.post("/api/check-proxy", response_model=ProxyCheckResponse)
 def check_proxy(req: ProxyCheckRequest) -> ProxyCheckResponse:
-    provider_proxy = req.us_proxy
     results = [
         probe_proxy("checkout/approve JP", req.jp_proxy, "JP", required=True),
-        probe_proxy("provider US", provider_proxy, "US", required=True),
     ]
+    if req.us_proxy:
+        results.append(probe_proxy("provider US", req.us_proxy, "US", required=False))
+    if req.au_proxy:
+        results.append(probe_proxy("provider AU", req.au_proxy, "AU", required=False))
+    if not req.us_proxy and not req.au_proxy:
+        results.append(probe_proxy("provider US", req.us_proxy or req.au_proxy, "US", required=True))
     mark_same_exit(results)
     return ProxyCheckResponse(ok=all(item.ok for item in results), results=results)
 
@@ -1960,28 +1994,35 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
 
     requested_checkout = effective_country(req)
     requested_pm = effective_payment_method_country(req)
-    combos = combo_attempt_order(requested_checkout, requested_pm)
+    billing_combos = combo_attempt_order(requested_checkout, requested_pm)
+    # Expand with provider proxy options: try US first, then AU if provided
+    proxy_opts = _provider_proxy_options(req)
+    combos: list[tuple[str, str, tuple[str, str, str]]] = []
+    for cc, pm in billing_combos:
+        for label, proxy_val, expected_country in proxy_opts:
+            combos.append((cc, pm, (label, proxy_val, expected_country)))
     failures: list[str] = []
     combo_results: list[dict[str, str]] = []
-    log("start", "开始执行 PP 链提取流程，已启用组合回退。")
+    log("start", f"开始执行 PP 链提取流程，{len(combos)} 种组合（{len(billing_combos)} 账单 × {len(proxy_opts)} 代理）。")
 
-    for index, (checkout_country, pm_country) in enumerate(combos, start=1):
+    for index, (checkout_country, pm_country, (proxy_label, proxy_url, proxy_country)) in enumerate(combos, start=1):
         combo_started_at = time.time()
-        combo_label = combo_name(checkout_country, pm_country)
+        combo_label = f"{combo_name(checkout_country, pm_country)}@{proxy_country}"
         combo_result = {"combo": combo_label, "status": "运行中", "detail": ""}
         combo_results.append(combo_result)
         combo_req = req.model_copy(update={"billing_country": checkout_country, "payment_method_country": pm_country})
         log(
             "combo",
-            f"尝试组合 {index}/{len(combos)}：checkout={checkout_country}/{currency_for_country(checkout_country)}，PM={pm_country}，provider=US。",
+            f"尝试组合 {index}/{len(combos)}：checkout={checkout_country}/{currency_for_country(checkout_country)}，PM={pm_country}，provider={proxy_country}。",
         )
         try:
             result = run_single_combo(
                 combo_req,
                 checkout_country,
                 pm_country,
-                fallback=combo_label != combo_name(requested_checkout, requested_pm),
+                fallback=False,
                 prior_failures=failures,
+                provider_proxy_country=proxy_country,
                 emit=emit,
             )
             if result.fallback:
@@ -2203,6 +2244,7 @@ def run_single_combo(
     pm_country: str,
     fallback: bool,
     prior_failures: list[str],
+    provider_proxy_country: str = "US",
     emit: Any | None = None,
 ) -> LongLinkResponse:
     def log(step: str, message: str) -> None:
@@ -2211,26 +2253,40 @@ def run_single_combo(
 
     checkout_country = effective_country(req)
     pm_country = effective_payment_method_country(req)
+    proxy_country = (provider_proxy_country or "US").upper()
     flow_type = "paypal_de" if checkout_country == "DE" else "paypal_jp"
     log(
         "billing",
         f"当前组合：checkout账单={checkout_country}/{currency_for_country(checkout_country)}，"
-        f"PM账单={pm_country}，provider代理=US。",
+        f"PM账单={pm_country}，provider代理={proxy_country}。",
     )
-    log("proxy", "检测 provider US 出口；checkout/approve JP 会在对应阶段检测。")
+    log("proxy", f"检测 provider {proxy_country} 出口；checkout/approve JP 会在对应阶段检测。")
     run_req = req
     proxy_error = ""
-    for attempt in range(1, 6):
-        run_req = req.model_copy(update={"us_proxy": rotate_kookeey_proxy_session(provider_stage_proxy(req), "US")})
-        log("proxy", f"provider US 第 {attempt}/5 次：自动轮换粘性 session。")
-        provider_probe = check_provider_proxy(run_req)
+    # Get the right proxy for the provider stage
+    base_provider_proxy = (
+        normalize_proxy_url(str(req.au_proxy or "").strip()) if proxy_country == "AU"
+        else provider_stage_proxy(req)
+    )
+    rotated = rotate_kookeey_proxy_session(base_provider_proxy, proxy_country)
+    can_rotate = rotated != base_provider_proxy
+    max_attempts = 5 if can_rotate else 1
+    for attempt in range(1, max_attempts + 1):
+        if can_rotate:
+            rotated_proxy = rotate_kookeey_proxy_session(base_provider_proxy, proxy_country)
+            run_req = req.model_copy(update={"us_proxy": rotated_proxy, "au_proxy": rotated_proxy})
+            log("proxy", f"provider {proxy_country} 第 {attempt}/{max_attempts} 次：自动轮换粘性 session。")
+        else:
+            run_req = req
+            if attempt == 1 and proxy_country != "US":
+                log("proxy", f"provider {proxy_country} 非 Kookeey 格式，跳过轮换。")
+        provider_probe = check_provider_proxy_for(run_req, proxy_country)
         if provider_probe.ok:
             break
-        proxy_error = provider_probe.error or "provider US 代理不可用"
-        log("proxy", f"provider US 不可用，准备更换：{proxy_error}")
+        proxy_error = provider_probe.error or f"provider {proxy_country} 代理不可用"
+        log("proxy", f"provider {proxy_country} 不可用，准备更换：{proxy_error}")
     else:
-        raise HTTPException(status_code=400, detail=f"provider US 代理检测未通过: {proxy_error}")
-    provider_country = "US"
+        raise HTTPException(status_code=400, detail=f"provider {proxy_country} 代理检测未通过: {proxy_error}")
     log("proxy", f"provider 代理检测通过：{format_proxy_probe_summary([provider_probe])}。")
     log("checkout", "正在使用 JP 代理创建 ChatGPT checkout。")
     run_req, chatgpt, checkout = create_checkout_with_retry(run_req, emit=log)
@@ -2269,7 +2325,7 @@ def run_single_combo(
         else ("checkout 响应" if checkout.get("stripe_publishable_key") else "内置默认")
     )
     log("stripe_init", f"Stripe key 来源：{stripe_key_source}；checkout_ui_mode=custom。")
-    log("provider", f"正在切换到 provider 阶段代理：{provider_country}。")
+    log("provider", f"正在切换到 provider 阶段代理：{proxy_country}。")
     provider = create_provider_link_with_retry(chatgpt, checkout, run_req, emit=log)
     stripe_hosted_url = provider["stripe_hosted_url"]
     hosted_long_url = to_openai_pay_url(stripe_hosted_url)
