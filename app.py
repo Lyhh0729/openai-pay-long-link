@@ -2411,6 +2411,37 @@ def emit_combo_result(
 
 def summarize_combo_failure(detail: str) -> str:
     text = str(detail or "")
+
+    def _extract(pattern: str) -> str:
+        m = re.search(pattern, text)
+        return (m.group(1) or "").strip() if m else ""
+
+    # For stripe submission failures, compile ALL key diagnostic fields
+    if "stripe submission failed" in text:
+        state = _extract(r"submission_state=([^,，;；]+)")
+        reason = _extract(r"submission_reason=([^,，;；]+)")
+        code = _extract(r"submission_code=([^,，;；]+)")
+        msg = _extract(r"submission_message=([^,，;；]+)")
+        approval = _extract(r"approval_method=([^,，;；]+)")
+        redirect = _extract(r"redirect_candidate=([^,，;；]+)")
+        parts = []
+        if state and state.lower() not in {"无", "none", "unknown", "未知"}:
+            parts.append(f"state={state}")
+        if reason and reason.lower() not in {"无", "none", "unknown", "未知"}:
+            parts.append(f"reason={reason}")
+        if code and code.lower() not in {"无", "none", "unknown", "未知"}:
+            parts.append(f"code={code}")
+        if msg and msg.lower() not in {"无", "none", "unknown", "未知"}:
+            parts.append(f"message={short_error(msg, 50)}")
+        if approval and approval.lower() not in {"无", "none", "unknown", "未知"}:
+            parts.append(f"approval={approval}")
+        if redirect and redirect.lower() not in {"无", "none", "unknown", "未知"}:
+            parts.append(f"redirect={short_error(redirect, 40)}")
+        if parts:
+            return "submission failed: " + ", ".join(parts)
+        return "Stripe submission failed"
+
+    # Generic fallback extraction
     markers = [
         r"submission_reason=([^,，;；]+)",
         r"submission_code=([^,，;；]+)",
@@ -2427,14 +2458,12 @@ def summarize_combo_failure(detail: str) -> str:
                 return short_error(value, 80)
     if "chatgpt approve unexpected result" in text.lower():
         return short_error(text.replace("chatgpt approve unexpected result:", "approve"), 80)
-    if "provider US 代理检测未通过" in text or "代理不能为空" in text:
+    if "代理检测未通过" in text or "代理不能为空" in text:
         return "代理检测失败"
     if "provider 网络异常" in text:
         return "provider 网络异常"
     if "redirect url resolution timeout" in text:
         return "未解析到 BA approve 链"
-    if "stripe submission failed" in text:
-        return "Stripe submission failed"
     if "未提取到最终 PayPal BA approve 链" in text:
         return "未提取到 BA approve 链"
     return short_error(text, 80)
