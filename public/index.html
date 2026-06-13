@@ -360,6 +360,13 @@
         cursor: pointer;
       }
 
+      .route-btn.active {
+        border-color: var(--accent) !important;
+        background: var(--accent-soft) !important;
+        color: var(--accent) !important;
+        font-weight: 750;
+      }
+
       details {
         border: 1px solid var(--line);
         border-radius: var(--radius);
@@ -717,7 +724,14 @@
                 <div id="tokenMeta" class="token-meta"></div>
 
                 <hr style="border: 0; border-top: 1px solid var(--line); margin: 24px 0" />
-                <h2 class="panel-title" style="margin-bottom: 22px">运行配置</h2>
+                <h2 class="panel-title" style="margin-bottom: 16px">策略/路线选择</h2>
+                <div class="route-buttons" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px;">
+                  <button type="button" class="secondary route-btn active" data-route="online">✅ 线上成功：JP checkout + US provider + AU PM</button>
+                  <button type="button" class="secondary route-btn" data-route="auto">🔄 自动：全部跨境组合</button>
+                  <button type="button" class="secondary route-btn" data-route="fixed">📌 固定：US checkout + US provider + US PM</button>
+                  <button type="button" class="secondary route-btn" data-route="fallback">🛡️ 备用：DE checkout + DE provider + DE PM</button>
+                </div>
+                <h2 class="panel-title" style="margin-bottom: 16px">运行配置（三阶段独立控制）</h2>
                 <div class="grid">
                   <div class="field full">
                     <label>Checkout/Billing Countries（多选）</label>
@@ -1101,7 +1115,7 @@
       function compactFailureDetail(detail) {
         const text = String(detail || "").replace(/\s+/g, " ").trim();
         if (!text) return "";
-        return text.length > 140 ? `${text.slice(0, 140)}...` : text;
+        return text.length > 320 ? `${text.slice(0, 320)}...` : text;
       }
 
       function summarizeFailureDetails(rows) {
@@ -1398,6 +1412,34 @@
         await navigator.clipboard.writeText(currentLongUrl);
         setStatus("已复制。");
       }
+
+      // ── Route preset buttons ──
+      const ROUTE_PRESETS = {
+        online:  { billing: ["US"], pm: ["AU"], provider: ["US"], label: "线上成功 JP+US+AU" },
+        auto:    { billing: ["US","DE","AU"], pm: ["DE","AU"], provider: ["US","AU"], label: "自动全组合" },
+        fixed:   { billing: ["US"], pm: ["US"], provider: ["US"], label: "固定 US+US" },
+        fallback:{ billing: ["DE"], pm: ["DE"], provider: ["US"], label: "备用 DE+DE" },
+      };
+
+      function applyRoute(routeKey) {
+        const preset = ROUTE_PRESETS[routeKey];
+        if (!preset) return;
+        setChecks("billingCountries", preset.billing);
+        setChecks("paymentMethodCountries", preset.pm);
+        setChecks("providerProxyCountries", preset.provider);
+        document.querySelectorAll(".route-btn").forEach(b => b.classList.remove("active"));
+        document.querySelector(`.route-btn[data-route="${routeKey}"]`)?.classList.add("active");
+      }
+
+      function setChecks(containerId, values) {
+        document.querySelectorAll(`#${containerId} input[type="checkbox"]`).forEach(cb => {
+          cb.checked = values.includes(cb.value);
+        });
+      }
+
+      document.querySelectorAll(".route-btn").forEach(btn => {
+        btn.addEventListener("click", () => applyRoute(btn.dataset.route));
+      });
 
       loadProxy();
       $("accessToken").addEventListener("input", updateTokenMeta);

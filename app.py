@@ -2416,6 +2416,17 @@ def summarize_combo_failure(detail: str) -> str:
         m = re.search(pattern, text)
         return (m.group(1) or "").strip() if m else ""
 
+    def _extract_json_error_field(key: str) -> str:
+        patterns = [
+            rf'"{re.escape(key)}"\s*:\s*"([^"]+)"',
+            rf"'{re.escape(key)}'\s*:\s*'([^']+)'",
+        ]
+        for pattern in patterns:
+            value = _extract(pattern)
+            if value:
+                return value
+        return ""
+
     # For stripe submission failures, compile ALL key diagnostic fields
     if "stripe submission failed" in text:
         state = _extract(r"submission_state=([^,，;；]+)")
@@ -2440,6 +2451,24 @@ def summarize_combo_failure(detail: str) -> str:
         if parts:
             return "submission failed: " + ", ".join(parts)
         return "Stripe submission failed"
+
+    if "stripe confirm failed" in text:
+        code = _extract_json_error_field("code")
+        message = _extract_json_error_field("message")
+        decline = _extract_json_error_field("decline_code")
+        payment_type = _extract_json_error_field("type")
+        parts = []
+        if code:
+            parts.append(f"code={code}")
+        if decline:
+            parts.append(f"decline={decline}")
+        if payment_type:
+            parts.append(f"type={payment_type}")
+        if message:
+            parts.append(f"message={short_error(message, 120)}")
+        if parts:
+            return "confirm failed: " + ", ".join(parts)
+        return short_error(text, 180)
 
     # Generic fallback extraction
     markers = [
