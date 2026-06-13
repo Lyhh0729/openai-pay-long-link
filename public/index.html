@@ -1098,6 +1098,26 @@
         return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
       }
 
+      function compactFailureDetail(detail) {
+        const text = String(detail || "").replace(/\s+/g, " ").trim();
+        if (!text) return "";
+        return text.length > 140 ? `${text.slice(0, 140)}...` : text;
+      }
+
+      function summarizeFailureDetails(rows) {
+        const parts = [];
+        const seen = new Set();
+        for (const row of rows || []) {
+          if (row.status !== "失败") continue;
+          const detail = compactFailureDetail(row.detail);
+          if (!detail || seen.has(detail)) continue;
+          seen.add(detail);
+          parts.push(detail);
+          if (parts.length >= 3) break;
+        }
+        return parts;
+      }
+
       function addLog(message, isError = false, step = "", event = null, options = {}) {
         const line = document.createElement("div");
         line.className = "log-line";
@@ -1237,7 +1257,9 @@
         comboRows.rendered = true;
         for (const row of comboRows) {
           const ok = row.status === "成功";
-          addLog(row.message || "组合测试", !ok, "combo_result", row, {
+          const detail = compactFailureDetail(row.detail);
+          const message = !ok && detail ? `${row.message || "组合测试"} | 失败原因：${detail}` : (row.message || "组合测试");
+          addLog(message, !ok, "combo_result", row, {
             level: ok ? "INFO" : "WARN",
             comboText: String(row.combo_index || "–"),
             statusText: row.status || (ok ? "成功" : "失败"),
@@ -1249,7 +1271,9 @@
       function addFinalRunSummary(totalElapsedMs) {
         const success = comboRows.filter((row) => row.status === "成功").length;
         const failure = comboRows.filter((row) => row.status === "失败").length;
-        addLog(`运行完成：成功 ${success}，失败 ${failure}，总计 ${success + failure}`, false, "summary", { elapsed_ms: totalElapsedMs }, {
+        const failureReasons = summarizeFailureDetails(comboRows);
+        const suffix = failureReasons.length ? ` | 失败原因摘要：${failureReasons.join("；")}` : "";
+        addLog(`运行完成：成功 ${success}，失败 ${failure}，总计 ${success + failure}${suffix}`, false, "summary", { elapsed_ms: totalElapsedMs }, {
           level: "INFO",
           comboText: "–",
           statusText: "–",
