@@ -12,6 +12,7 @@ import app as app_module
 from app import (
     app,
     billing_for_country,
+    bill_match_priority_label,
     classify_combo_failure,
     collect_urls,
     combo_attempt_order,
@@ -38,6 +39,7 @@ from app import (
     processor_entity_for_country,
     rotate_kookeey_proxy_session,
     short_error,
+    sort_bill_match_priority_combos,
     stripe_checkout_long_url,
     stripe_payload_diagnostics,
     summarize_failure_classes,
@@ -658,6 +660,24 @@ class TestFailureClassification:
         assert result == "submission_generic_decline x3；confirm_invalid_request x1"
 
 
+class TestBillMatchPriority:
+    def test_labels_two_bill_match_priority_combos(self):
+        assert bill_match_priority_label("US", "AU", "US") == "账单匹配优先#1"
+        assert bill_match_priority_label("US", "AU", "AU") == "账单匹配优先#2"
+        assert bill_match_priority_label("US", "US", "US") == ""
+
+    def test_sorts_bill_match_priority_combos_to_front(self):
+        combos = [
+            ("DE", "DE", ("US Proxy", "http://us", "US")),
+            ("US", "AU", ("AU Proxy", "http://au", "AU")),
+            ("US", "US", ("US Proxy", "http://us", "US")),
+            ("US", "AU", ("US Proxy", "http://us", "US")),
+        ]
+        ordered = sort_bill_match_priority_combos(combos)
+        assert ordered[0] == ("US", "AU", ("US Proxy", "http://us", "US"))
+        assert ordered[1] == ("US", "AU", ("AU Proxy", "http://au", "AU"))
+
+
 class TestComboName:
     def test_combo_format(self):
         assert combo_name("US", "DE") == "US+DE"
@@ -778,13 +798,26 @@ class TestEmitComboResult:
         def capture(step, message, **extra):
             events.append((step, message, extra))
 
-        emit_combo_result(capture, 2, "US", "AU", "AU", "en-AU", "失败", 3210, "未解析到 BA approve 链")
+        emit_combo_result(
+            capture,
+            2,
+            "US",
+            "AU",
+            "AU",
+            "en-AU",
+            "失败",
+            3210,
+            "未解析到 BA approve 链",
+            priority_label="账单匹配优先#2",
+        )
         assert len(events) == 1
         step, message, extra = events[0]
         assert step == "combo_result"
+        assert message.startswith("[账单匹配优先#2] ")
         assert "US / AU / USD / en-AU / JP / AU" in message
         assert extra["provider_proxy_country"] == "AU"
         assert extra["locale"] == "en-AU"
+        assert extra["priority_label"] == "账单匹配优先#2"
 
 
 class TestIsRetryableNetworkError:

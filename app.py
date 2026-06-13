@@ -2251,6 +2251,7 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
     for cc, pm in billing_combos:
         for label, proxy_val, expected_country in proxy_opts:
             combos.append((cc, pm, (label, proxy_val, expected_country)))
+    combos = sort_bill_match_priority_combos(combos)
     if req.diagnostic_mode:
         limit = max(1, min(len(combos), int(req.max_combos or 1)))
         combos = combos[:limit]
@@ -2265,7 +2266,14 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
     for index, (checkout_country, pm_country, (proxy_label, proxy_url, proxy_country)) in enumerate(combos, start=1):
         combo_started_at = time.time()
         combo_label = f"{combo_name(checkout_country, pm_country)}@{proxy_country}"
-        combo_result = {"combo": combo_label, "status": "运行中", "detail": "", "failure_class": ""}
+        priority_label = bill_match_priority_label(checkout_country, pm_country, proxy_country)
+        combo_result = {
+            "combo": combo_label,
+            "status": "运行中",
+            "detail": "",
+            "failure_class": "",
+            "priority_label": priority_label,
+        }
         combo_results.append(combo_result)
         combo_req = req.model_copy(
             update={
@@ -2276,7 +2284,11 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
         )
         log(
             "combo",
-            f"尝试组合 {index}/{len(combos)}：checkout={checkout_country}/{currency_for_country(checkout_country)}，PM={pm_country}，provider={proxy_country}。",
+            (
+                f"尝试组合 {index}/{len(combos)}：checkout={checkout_country}/{currency_for_country(checkout_country)}，"
+                f"PM={pm_country}，provider={proxy_country}。"
+                + (f" [{priority_label}]" if priority_label else "")
+            ),
         )
         try:
             result = run_single_combo(
@@ -2301,6 +2313,7 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
                 combo_req.payment_locale,
                 "成功",
                 int(combo_result["elapsed_ms"]),
+                priority_label=priority_label,
             )
             log("summary", format_combo_results(combo_results))
             return result
@@ -2326,6 +2339,7 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
                 int(combo_result["elapsed_ms"]),
                 combo_result["detail"],
                 failure_class,
+                priority_label,
             )
             # Always continue to next combo — never stop early
             log("combo", f"组合 {combo_label} 未拿到 BA approve：{short_detail}")
@@ -2362,6 +2376,7 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
                 int(combo_result["elapsed_ms"]),
                 combo_result["detail"],
                 failure_class,
+                priority_label,
             )
             log("combo", f"组合 {combo_label} 网络异常，进入下一个组合：{short_detail}")
             if req.diagnostic_mode and failure_class_counts.get(failure_class, 0) >= 2:
@@ -2387,6 +2402,32 @@ def combo_name(checkout_country: str, pm_country: str) -> str:
     return f"{checkout_country}+{pm_country}"
 
 
+def bill_match_priority_label(checkout_country: str, pm_country: str, provider_proxy_country: str) -> str:
+    checkout = normalize_country(checkout_country)
+    pm = normalize_country(pm_country)
+    provider = normalize_country(provider_proxy_country)
+    if checkout == "US" and pm == "AU" and provider == "US":
+        return "账单匹配优先#1"
+    if checkout == "US" and pm == "AU" and provider == "AU":
+        return "账单匹配优先#2"
+    return ""
+
+
+def sort_bill_match_priority_combos(
+    combos: list[tuple[str, str, tuple[str, str, str]]],
+) -> list[tuple[str, str, tuple[str, str, str]]]:
+    def _priority(item: tuple[str, str, tuple[str, str, str]]) -> tuple[int, int]:
+        checkout_country, pm_country, (_label, _proxy_val, proxy_country) = item
+        priority_label = bill_match_priority_label(checkout_country, pm_country, proxy_country)
+        if priority_label == "账单匹配优先#1":
+            return (0, 0)
+        if priority_label == "账单匹配优先#2":
+            return (0, 1)
+        return (1, 0)
+
+    return sorted(list(combos), key=_priority)
+
+
 def format_combo_results(combo_results: list[dict[str, str]]) -> str:
     compact: list[str] = []
     detailed: list[str] = []
@@ -2394,8 +2435,10 @@ def format_combo_results(combo_results: list[dict[str, str]]) -> str:
         combo = item.get("combo") or "未知组合"
         status = item.get("status") or "未知"
         detail = item.get("detail") or ""
-        compact.append(f"{combo} {status}")
-        detailed.append(f"{combo} {status}{'：' + detail if detail and status == '失败' else ''}")
+        priority_label = item.get("priority_label") or ""
+        display_combo = f"{combo}[{priority_label}]" if priority_label else combo
+        compact.append(f"{display_combo} {status}")
+        detailed.append(f"{display_combo} {status}{'：' + detail if detail and status == '失败' else ''}")
     if not compact:
         return "组合结果：无已尝试组合"
     if compact == detailed:
@@ -2414,13 +2457,15 @@ def emit_combo_result(
     elapsed_ms: int,
     detail: str = "",
     failure_class: str = "",
+    priority_label: str = "",
 ) -> None:
     if not emit:
         return
     status_text = "成功" if status == "成功" else "失败"
     provider_country = (provider_proxy_country or "US").upper()
     locale_text = locale_parts(locale)[0] if locale else "en-US"
-    message = (
+    prefix = f"[{priority_label}] " if priority_label else ""
+    message = prefix + (
         f"组合测试：{checkout_country} / {pm_country} / {currency_for_country(checkout_country)} / "
         f"{locale_text} / JP / {provider_country}"
     )
@@ -2438,6 +2483,7 @@ def emit_combo_result(
         status=status_text,
         detail=detail,
         failure_class=failure_class,
+        priority_label=priority_label,
         combo_elapsed_ms=elapsed_ms,
     )
 
