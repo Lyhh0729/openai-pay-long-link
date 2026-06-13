@@ -2314,17 +2314,16 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
                 int(combo_result["elapsed_ms"]),
                 combo_result["detail"],
             )
-            if not is_retryable_combo_failure(exc):
-                log("error", f"组合 {combo_label} 失败且不可回退：{short_detail}")
-                log("summary", format_combo_results(combo_results))
-                raise
+            # Always continue to next combo — never stop early
             log("combo", f"组合 {combo_label} 未拿到 BA approve：{short_detail}")
             if index < len(combos):
                 next_checkout, next_pm, _next_proxy = combos[index]
                 log("combo", f"自动切换下一个组合：checkout={next_checkout}，PM={next_pm}，proxy={_next_proxy[2]}。")
         except Exception as exc:
             if not is_retryable_network_error(exc):
-                raise
+                log("error", f"组合 {combo_label} 异常：{exc}")
+            if index < len(combos):
+                log("combo", "跳过异常，尝试下一个组合。")
             detail = f"provider 网络异常: {exc}"
             short_detail = short_error(detail)
             summary = f"{combo_label}: {short_detail}"
