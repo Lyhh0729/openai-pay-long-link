@@ -484,16 +484,20 @@ def _provider_proxy_options(req: LongLinkRequest) -> list[tuple[str, str, str]]:
 
 
 def check_provider_proxy_for(req: LongLinkRequest, country: str) -> ProxyProbeResult:
-    """Check a specific provider proxy by country ('US' or 'AU')."""
+    """Check a specific provider proxy by country ('US', 'AU', or 'JP')."""
     country = (country or "").upper()
     if country == "AU":
         au = str(req.au_proxy or "").strip()
         if au:
             return probe_proxy("provider AU", normalize_proxy_url(au), "AU", required=False)
-    us = str(req.us_proxy or "").strip()
-    if us:
-        return probe_proxy("provider US", normalize_proxy_url(us), "US", required=False)
-    return probe_proxy("provider US", provider_stage_proxy(req), "US", required=True)
+    if country == "US":
+        us = str(req.us_proxy or "").strip()
+        if us:
+            return probe_proxy("provider US", normalize_proxy_url(us), "US", required=False)
+    # Single-proxy or JP-provider fallback — check the actual proxy
+    fallback = provider_stage_proxy(req)
+    expected = country if country in ("US", "AU") else "JP"
+    return probe_proxy(f"provider {country}", fallback, expected, required=False)
 
 
 def check_provider_proxy(req: LongLinkRequest) -> ProxyProbeResult:
@@ -1610,23 +1614,35 @@ def create_provider_link_with_retry(
     chatgpt: Any,
     checkout: dict[str, Any],
     req: LongLinkRequest,
+    provider_country: str = "US",
     emit: Any | None = None,
 ) -> dict[str, str]:
+    proxy_country = (provider_country or "US").upper()
     last_error = ""
-    for attempt in range(1, PROVIDER_RETRY_ATTEMPTS + 1):
-        attempt_req = req.model_copy(update={"us_proxy": rotate_kookeey_proxy_session(provider_stage_proxy(req), "US")})
-        provider_proxy = provider_stage_proxy(attempt_req)
-        if emit:
-            emit("provider", f"provider 第 {attempt}/{PROVIDER_RETRY_ATTEMPTS} 次：轮换 US session。")
-            emit("proxy", f"provider 第 {attempt}/{PROVIDER_RETRY_ATTEMPTS} 次：正在检测 US 出口。")
-        provider_probe = check_provider_proxy(attempt_req)
-        if not provider_probe.ok:
-            last_error = provider_probe.error or "provider US 代理不可用"
+    base_proxy = provider_stage_proxy(req)
+    rotated = rotate_kookeey_proxy_session(base_proxy, proxy_country)
+    can_rotate = rotated != base_proxy
+    max_attempts = PROVIDER_RETRY_ATTEMPTS if can_rotate else 1
+    for attempt in range(1, max_attempts + 1):
+        if can_rotate:
+            rotated_proxy = rotate_kookeey_proxy_session(base_proxy, proxy_country)
+            attempt_req = req.model_copy(update={"us_proxy": rotated_proxy, "au_proxy": rotated_proxy})
             if emit:
-                emit("proxy", f"provider US session 不可用，准备更换：{last_error}")
+                emit("provider", f"provider 第 {attempt}/{max_attempts} 次：轮换 {proxy_country} session。")
+                emit("proxy", f"provider 第 {attempt}/{max_attempts} 次：正在检测 {proxy_country} 出口。")
+        else:
+            attempt_req = req
+            if emit:
+                emit("provider", f"provider {proxy_country} 单代理模式，跳过轮换。")
+        provider_proxy = provider_stage_proxy(attempt_req)
+        provider_probe = check_provider_proxy_for(attempt_req, proxy_country)
+        if not provider_probe.ok:
+            last_error = provider_probe.error or f"provider {proxy_country} 代理不可用"
+            if emit:
+                emit("proxy", f"provider {proxy_country} session 不可用，准备更换：{last_error}")
             continue
         if emit:
-            emit("proxy", f"provider US 出口：{provider_probe.ip} / {provider_probe.country_code} {provider_probe.country}。")
+            emit("proxy", f"provider {proxy_country} 出口：{provider_probe.ip} / {provider_probe.country_code} {provider_probe.country}。")
             emit("stripe_init", "正在请求 Stripe init。")
         try:
             init_payload = stripe_init(checkout["cs_id"], attempt_req, proxy_override=provider_proxy, checkout=checkout)
@@ -2424,7 +2440,7 @@ def run_single_combo(
     )
     log("stripe_init", f"Stripe key 来源：{stripe_key_source}；checkout_ui_mode=custom。")
     log("provider", f"正在切换到 provider 阶段代理：{proxy_country}。")
-    provider = create_provider_link_with_retry(chatgpt, checkout, run_req, emit=log)
+    provider = create_provider_link_with_retry(chatgpt, checkout, run_req, provider_country=proxy_country, emit=log)
     stripe_hosted_url = provider["stripe_hosted_url"]
     hosted_long_url = to_openai_pay_url(stripe_hosted_url)
     log("done", "PP 链提取完成。")
