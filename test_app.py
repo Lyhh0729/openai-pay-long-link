@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+import app as app_module
 from app import (
     app,
     billing_for_country,
@@ -15,6 +16,7 @@ from app import (
     combo_attempt_order,
     combo_name,
     compact_log_message,
+    configured_billing_combos,
     currency_for_country,
     emit_combo_result,
     effective_country,
@@ -565,12 +567,12 @@ class TestAuLocale:
 
 
 class TestAuComboOrder:
-    def test_au_skips_aud(self):
-        # AU checkout skipped — free trial requires USD
+    def test_all_countries_covered(self):
         order = combo_attempt_order("AU", "AU")
-        assert order[0] == ("US", "AU")
+        assert ("AU", "AU") in order
+        assert ("US", "AU") in order
         assert ("US", "US") in order
-        assert ("AU", "AU") not in order
+        assert len(order) >= 9
 
 
 # ───────────────────────────  single proxy mode  ───────────────────────────
@@ -607,22 +609,20 @@ class TestSingleProxyMode:
 
 
 class TestComboAttemptOrder:
-    def test_us_us(self):
-        order = combo_attempt_order("US", "US")
-        assert order[0] == ("US", "US")
-        assert ("DE", "DE") in order
-
-    def test_au_starts_with_us(self):
+    def test_all_combos_coverage(self):
         order = combo_attempt_order("AU", "AU")
-        assert order[0] == ("US", "AU")  # Skip AUD, go straight to USD
+        # Should contain ALL 9 cross-country combos
+        assert len(order) >= 9
+        assert ("US", "AU") in order
+        assert ("US", "US") in order
+        assert ("US", "DE") in order
+        assert ("DE", "AU") in order
+        assert ("AU", "AU") in order
 
-    def test_de_starts_with_us(self):
-        order = combo_attempt_order("DE", "DE")
-        assert order[0] == ("US", "DE")  # Always start with USD checkout
-
-    def test_us_de(self):
-        order = combo_attempt_order("US", "DE")
-        assert order[0] == ("US", "DE")
+    def test_us_us_at_front(self):
+        order = combo_attempt_order("AU", "AU")
+        # (US,AU) and (US,US) should be first
+        assert order[0:2] == [("US", "AU"), ("US", "US")]
 
     def test_all_combos_valid_countries(self):
         order = combo_attempt_order("US", "US")
@@ -631,10 +631,42 @@ class TestComboAttemptOrder:
             assert pm in ("US", "DE", "AU")
 
 
+class TestConfiguredBillingCombos:
+    def test_uses_explicit_country_lists_when_present(self):
+        req = app_module.LongLinkRequest(
+            accessToken="fake-token",
+            billing_countries=["US", "DE"],
+            payment_method_countries=["AU", "US"],
+        )
+        combos = configured_billing_combos(req)
+        assert combos == [("US", "AU"), ("US", "US"), ("DE", "AU"), ("DE", "US")]
+
+
 class TestComboName:
     def test_combo_format(self):
         assert combo_name("US", "DE") == "US+DE"
         assert combo_name("DE", "US") == "DE+US"
+
+
+class TestCtfMockMode:
+    def test_mock_mode_runs_full_flow_with_combo_arrays(self):
+        body = {
+            "accessToken": "mock-token",
+            "jp_proxy": "mock://jp",
+            "us_proxy": "mock://us",
+            "au_proxy": "mock://au",
+            "billing_countries": ["DE", "US"],
+            "payment_method_countries": ["DE", "AU"],
+            "provider_proxy_countries": ["US", "AU"],
+        }
+        with patch.object(app_module, "CTF_MOCK_MODE", True):
+            response = client.post("/api/long-link", json=body)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is True
+        assert data["billing_country"] in {"DE", "US"}
+        assert data["payment_method_country"] == "AU"
+        assert data["provider_redirect_url"].startswith("https://www.paypal.com/agreements/approve?ba_token=BA-MOCK-")
 
 
 # ───────────────────────────  error / logging helpers  ───────────────────────────

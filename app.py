@@ -33,6 +33,7 @@ DEFAULT_TIMEOUT = 30
 CHATGPT_TIMEOUT = 45
 CHATGPT_RETRY_ATTEMPTS = 5
 PROVIDER_RETRY_ATTEMPTS = 3
+CTF_MOCK_MODE = os.getenv("OPENAI_PAY_CTF_MOCK_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
 BASE_DIR = Path(__file__).resolve().parent
 PUBLIC_DIR = BASE_DIR / "public"
 LOG_DIR = BASE_DIR / "logs"
@@ -149,9 +150,13 @@ class LongLinkRequest(BaseModel):
     jp_proxy: str = ""
     us_proxy: str = ""
     au_proxy: str = ""
+    billing_countries: list[str] = []
+    payment_method_countries: list[str] = []
+    provider_proxy_countries: list[str] = []
     stripe_publishable_key: str = ""
     billing_country: str = "US"
     payment_method_country: str = "US"
+    provider_proxy_country: str = ""
     checkout_ui_mode: str = "custom"
     payment_locale: str = "en"
     device_id: str = ""
@@ -357,6 +362,20 @@ def provider_stage_proxy(req: LongLinkRequest) -> str:
     return normalize_proxy_url(PROVIDER_STAGE_PROXY)
 
 
+def provider_proxy_for_country(req: LongLinkRequest, country: str) -> str:
+    country = normalize_country(country)
+    if country == "AU":
+        explicit = str(req.au_proxy or "").strip()
+        if explicit:
+            return normalize_proxy_url(explicit)
+    if country == "JP":
+        return checkout_stage_proxy(req)
+    explicit = str(req.us_proxy or "").strip()
+    if explicit:
+        return normalize_proxy_url(explicit)
+    return normalize_proxy_url(PROVIDER_STAGE_PROXY)
+
+
 def apply_provider_proxy(chatgpt: Any, proxy: str) -> None:
     set_proxy_url(chatgpt, proxy)
 
@@ -414,6 +433,18 @@ def fetch_proxy_geo(session: Any) -> tuple[str, str, str]:
 def probe_proxy(label: str, proxy: str, expected_country: str = "", required: bool = False) -> ProxyProbeResult:
     proxy = normalize_proxy_url(proxy)
     expected_country = str(expected_country or "").strip().upper()
+    if CTF_MOCK_MODE:
+        effective_proxy = proxy or f"mock://{(expected_country or 'US').lower()}-pool"
+        country_code = expected_country or "US"
+        ip = mock_ip_for_country(country_code, f"{label}:{effective_proxy}")
+        return ProxyProbeResult(
+            ok=True,
+            label=label,
+            proxy=effective_proxy,
+            ip=ip,
+            country=country_code,
+            country_code=country_code,
+        )
     if not proxy:
         if required:
             return ProxyProbeResult(ok=False, label=label, proxy="", error=f"{label} 代理不能为空")
@@ -463,6 +494,14 @@ def check_request_proxies(req: LongLinkRequest) -> list[ProxyProbeResult]:
 
 def _provider_proxy_options(req: LongLinkRequest) -> list[tuple[str, str, str]]:
     """Return list of (label, proxy_url, expected_country) for all available provider proxies."""
+    explicit_countries = normalize_country_list(req.provider_proxy_countries)
+    if explicit_countries:
+        opts: list[tuple[str, str, str]] = []
+        for country in explicit_countries:
+            proxy_val = provider_proxy_for_country(req, country)
+            opts.append((f"provider {country}", proxy_val, country))
+        return opts
+    # Default: use all available provider proxies
     opts: list[tuple[str, str, str]] = []
     us = str(req.us_proxy or "").strip()
     au = str(req.au_proxy or "").strip()
@@ -495,6 +534,27 @@ def check_provider_proxy_for(req: LongLinkRequest, country: str) -> ProxyProbeRe
 
 def check_provider_proxy(req: LongLinkRequest) -> ProxyProbeResult:
     return check_provider_proxy_for(req, "US")
+
+
+def mock_ip_for_country(country: str, salt: str = "") -> str:
+    base = sum(ord(ch) for ch in f"{country}:{salt}") % 200
+    return f"10.{(base % 200) + 1}.{((base * 7) % 200) + 1}.{((base * 13) % 200) + 1}"
+
+
+def mock_combo_profile(req: LongLinkRequest) -> dict[str, str]:
+    checkout_country = effective_country(req)
+    pm_country = effective_payment_method_country(req)
+    provider_country = normalize_country(getattr(req, "provider_proxy_country", "") or "US")
+    mode = "approve" if pm_country == "AU" else "redirect"
+    if checkout_country == "DE" and pm_country == "DE":
+        mode = "failed"
+    return {
+        "checkout_country": checkout_country,
+        "pm_country": pm_country,
+        "provider_country": provider_country,
+        "mode": mode,
+        "ba_token": f"BA-MOCK-{checkout_country}{pm_country}{provider_country}-{uuid.uuid4().hex[:10].upper()}",
+    }
 
 
 def mark_same_exit(results: list[ProxyProbeResult]) -> None:
@@ -549,6 +609,41 @@ def effective_country(req: LongLinkRequest) -> str:
 
 def effective_payment_method_country(req: LongLinkRequest) -> str:
     return normalize_country(req.payment_method_country or "US")
+
+
+def normalize_country_list(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in values or []:
+        country = normalize_country(item)
+        if country in seen:
+            continue
+        seen.add(country)
+        result.append(country)
+    return result
+
+
+def configured_billing_combos(req: LongLinkRequest) -> list[tuple[str, str]]:
+    billing_candidates = normalize_country_list(req.billing_countries)
+    pm_candidates = normalize_country_list(req.payment_method_countries)
+    if not billing_candidates and not pm_candidates:
+        # Default: US+DE billing × DE+AU payment = 4 combos
+        billing_candidates = ["US", "DE"]
+        pm_candidates = ["DE", "AU"]
+    elif not billing_candidates:
+        billing_candidates = [effective_country(req)]
+    elif not pm_candidates:
+        pm_candidates = [effective_payment_method_country(req)]
+    combos: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for checkout_country in billing_candidates:
+        for pm_country in pm_candidates:
+            item = (checkout_country, pm_country)
+            if item in seen:
+                continue
+            seen.add(item)
+            combos.append(item)
+    return combos
 
 
 def locale_parts(locale: str) -> tuple[str, str]:
@@ -664,6 +759,17 @@ def create_checkout(req: LongLinkRequest, chatgpt_session: Any | None = None) ->
     billing_country = effective_country(req)
     currency = currency_for_country(billing_country)
     checkout_ui_mode = (req.checkout_ui_mode or "custom").strip() or "custom"
+    if CTF_MOCK_MODE:
+        profile = mock_combo_profile(req)
+        return {
+            "cs_id": f"cs_mock_{uuid.uuid4().hex[:24]}",
+            "processor_entity": processor_entity_for_country(billing_country),
+            "stripe_publishable_key": req.stripe_publishable_key.strip() or "pk_mock_ctf",
+            "billing_country": billing_country,
+            "currency": currency,
+            "checkout_url": "",
+            "mock_mode": profile["mode"],
+        }
     body = {
         "plan_name": "chatgptplusplan",
         "billing_details": {
@@ -762,6 +868,21 @@ def stripe_init(cs_id: str, req: LongLinkRequest, proxy_override: str = "", chec
     stripe_pk = stripe_key_for_request(req, checkout)
     browser_locale, elements_locale = locale_parts(req.payment_locale)
     proxy = proxy_override or checkout_stage_proxy(req)
+    if CTF_MOCK_MODE:
+        profile = mock_combo_profile(req)
+        currency = currency_for_country(profile["checkout_country"]).lower()
+        return {
+            "_stripe_js_id": str(uuid.uuid4()),
+            "config_id": f"cfg_mock_{uuid.uuid4().hex[:10]}",
+            "init_checksum": f"chk_{uuid.uuid4().hex[:12]}",
+            "currency": currency,
+            "stripe_hosted_url": f"https://pay.openai.com/c/pay/{cs_id}",
+            "total_summary": {"due": 0},
+            "mock_mode": profile["mode"],
+            "browser_locale": browser_locale,
+            "elements_locale": elements_locale,
+            "key": stripe_pk,
+        }
     stripe = new_session(proxy)
     stripe.headers.update(
         {
@@ -957,6 +1078,8 @@ def stripe_create_payment_method(
     billing: dict[str, str],
     ctx: dict[str, Any],
 ) -> str:
+    if CTF_MOCK_MODE:
+        return f"pm_mock_{uuid.uuid4().hex[:18]}"
     runtime_version = str(ctx.get("runtime_version") or DEFAULT_STRIPE_RUNTIME_VERSION)
     body = {
         "billing_details[name]": billing.get("name") or "John Doe",
@@ -1005,6 +1128,27 @@ def stripe_confirm(
     req: LongLinkRequest,
     stripe_hosted_url: str,
 ) -> dict[str, Any]:
+    if CTF_MOCK_MODE:
+        profile = mock_combo_profile(req)
+        if profile["mode"] == "failed":
+            return {
+                "submission_attempt": {
+                    "state": "failed",
+                    "failure_reason": "mock_combo_rejected",
+                    "failure_code": "mock_failed",
+                    "failure_message": "Mock scenario rejected this combo.",
+                }
+            }
+        redirect_url = f"https://www.paypal.com/agreements/approve?ba_token={profile['ba_token']}"
+        if profile["mode"] == "approve":
+            return {
+                "submission_attempt": {"state": "requires_approval"},
+                "approval_method": "chatgpt_approve",
+            }
+        return {
+            "submission_attempt": {"state": "processing"},
+            "next_action": {"type": "redirect_to_url", "redirect_to_url": {"url": redirect_url}},
+        }
     return_url = stripe_confirm_return_url(cs_id, checkout, stripe_hosted_url)
     runtime_version = str(ctx.get("runtime_version") or DEFAULT_STRIPE_RUNTIME_VERSION)
     body: dict[str, str] = {
@@ -1320,6 +1464,11 @@ def stripe_payment_page_redirect_url(
     timeout_seconds: float = 30,
     emit: Any | None = None,
 ) -> str:
+    if CTF_MOCK_MODE:
+        profile = mock_combo_profile(req)
+        if profile["mode"] == "failed":
+            raise HTTPException(status_code=502, detail="redirect url resolution timeout: mock combo rejected")
+        return f"https://www.paypal.com/agreements/approve?ba_token={profile['ba_token']}"
     deadline = time.time() + max(1.0, float(timeout_seconds or 30))
     last_err = ""
     params = {
@@ -1381,6 +1530,8 @@ def stripe_payment_page_redirect_url(
 
 
 def chatgpt_approve(chatgpt: Any, cs_id: str, checkout: dict[str, Any]) -> None:
+    if CTF_MOCK_MODE:
+        return
     country = checkout["billing_country"]
     processor_entity = processor_entity_for_country(country, checkout.get("processor_entity", ""))
     try:
@@ -1612,7 +1763,7 @@ def create_provider_link_with_retry(
 ) -> dict[str, str]:
     proxy_country = (provider_country or "US").upper()
     last_error = ""
-    base_proxy = provider_stage_proxy(req)
+    base_proxy = provider_proxy_for_country(req, proxy_country)
     rotated = rotate_kookeey_proxy_session(base_proxy, proxy_country)
     can_rotate = rotated != base_proxy
     max_attempts = PROVIDER_RETRY_ATTEMPTS if can_rotate else 1
@@ -1627,7 +1778,7 @@ def create_provider_link_with_retry(
             attempt_req = req
             if emit:
                 emit("provider", f"provider {proxy_country} 单代理模式，跳过轮换。")
-        provider_proxy = provider_stage_proxy(attempt_req)
+        provider_proxy = provider_proxy_for_country(attempt_req, proxy_country)
         provider_probe = check_provider_proxy_for(attempt_req, proxy_country)
         if not provider_probe.ok:
             last_error = provider_probe.error or f"provider {proxy_country} 代理不可用"
@@ -2091,9 +2242,7 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
         if emit:
             emit(step, message)
 
-    requested_checkout = effective_country(req)
-    requested_pm = effective_payment_method_country(req)
-    billing_combos = combo_attempt_order(requested_checkout, requested_pm)
+    billing_combos = configured_billing_combos(req)
     # Expand with provider proxy options: try US first, then AU if provided
     proxy_opts = _provider_proxy_options(req)
     combos: list[tuple[str, str, tuple[str, str, str]]] = []
@@ -2109,7 +2258,13 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
         combo_label = f"{combo_name(checkout_country, pm_country)}@{proxy_country}"
         combo_result = {"combo": combo_label, "status": "运行中", "detail": ""}
         combo_results.append(combo_result)
-        combo_req = req.model_copy(update={"billing_country": checkout_country, "payment_method_country": pm_country})
+        combo_req = req.model_copy(
+            update={
+                "billing_country": checkout_country,
+                "payment_method_country": pm_country,
+                "provider_proxy_country": proxy_country,
+            }
+        )
         log(
             "combo",
             f"尝试组合 {index}/{len(combos)}：checkout={checkout_country}/{currency_for_country(checkout_country)}，PM={pm_country}，provider={proxy_country}。",
@@ -2287,27 +2442,26 @@ def summarize_combo_failure(detail: str) -> str:
 
 
 def combo_attempt_order(checkout_country: str, pm_country: str) -> list[tuple[str, str]]:
+    """Generate EVERY possible (checkout, PM) combination — leave no stone unturned."""
     checkout = normalize_country(checkout_country)
     pm = normalize_country(pm_country)
-    # Free trial only works with USD checkout.  Skip non-USD combos entirely.
-    ordered: list[tuple[str, str]] = [("US", pm)]
-    ordered.append(("US", "US"))
-    # US/DE 保留传统组合回退
-    if checkout in ("US", "DE"):
-        ordered.extend([
-            ("DE", "DE"),
-            ("DE", "US"),
-            ("US", "DE"),
-            ("US", "US"),
-        ])
-    result: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for item in ordered:
-        if item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result
+    all_countries = ["US", "DE", "AU"]
+    ordered: list[tuple[str, str]] = []
+    # Start with the selected PM and US checkout (most likely to work)
+    if (checkout, pm) not in ordered:
+        ordered.append((checkout, pm))
+    for cc in all_countries:
+        for pc in all_countries:
+            item = (cc, pc)
+            if item not in ordered:
+                ordered.append(item)
+    # Move (US, pm) and (US, US) to front
+    preferred = [("US", pm), ("US", "US")]
+    for p in reversed(preferred):
+        if p in ordered:
+            ordered.remove(p)
+            ordered.insert(0, p)
+    return ordered
 
 
 def short_error(detail: str, limit: int = 260) -> str:
@@ -2370,11 +2524,7 @@ def run_single_combo(
     log("proxy", f"检测 provider {proxy_country} 出口；checkout/approve JP 会在对应阶段检测。")
     run_req = req
     proxy_error = ""
-    # Get the right proxy for the provider stage
-    base_provider_proxy = (
-        normalize_proxy_url(str(req.au_proxy or "").strip()) if proxy_country == "AU"
-        else provider_stage_proxy(req)
-    )
+    base_provider_proxy = provider_proxy_for_country(req, proxy_country)
     rotated = rotate_kookeey_proxy_session(base_provider_proxy, proxy_country)
     can_rotate = rotated != base_provider_proxy
     max_attempts = 5 if can_rotate else 1
