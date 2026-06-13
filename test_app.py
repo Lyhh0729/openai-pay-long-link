@@ -22,6 +22,7 @@ from app import (
     currency_for_country,
     emit_combo_result,
     effective_country,
+    extract_elements_session_id,
     extract_processor_entity,
     extract_redirect_to_url,
     extract_stripe_publishable_key,
@@ -680,6 +681,19 @@ class TestBillMatchPriority:
         ordered = sort_bill_match_priority_combos(combos)
         assert ordered[0] == ("US", "AU", ("US Proxy", "http://us", "US"))
         assert ordered[1] == ("US", "AU", ("AU Proxy", "http://au", "AU"))
+
+
+class TestStripeInitExtraction:
+    def test_extracts_elements_session_id_from_nested_payload(self):
+        payload = {
+            "foo": {
+                "bar": [
+                    {"ignored": "x"},
+                    {"elements_session_id": "elements_session_abc123"},
+                ]
+            }
+        }
+        assert extract_elements_session_id(payload) == "elements_session_abc123"
 
 
 class TestComboName:

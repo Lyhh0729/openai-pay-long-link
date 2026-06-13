@@ -866,10 +866,8 @@ def stripe_key_for_request(req: LongLinkRequest, checkout: dict[str, Any] | None
     )
 
 
-def stripe_init(cs_id: str, req: LongLinkRequest, proxy_override: str = "", checkout: dict[str, Any] | None = None) -> dict[str, Any]:
-    stripe_pk = stripe_key_for_request(req, checkout)
+def _stripe_init_request(stripe: Any, cs_id: str, req: LongLinkRequest, stripe_pk: str) -> dict[str, Any]:
     browser_locale, elements_locale = locale_parts(req.payment_locale)
-    proxy = proxy_override or checkout_stage_proxy(req)
     if CTF_MOCK_MODE:
         profile = mock_combo_profile(req)
         currency = currency_for_country(profile["checkout_country"]).lower()
@@ -885,14 +883,6 @@ def stripe_init(cs_id: str, req: LongLinkRequest, proxy_override: str = "", chec
             "elements_locale": elements_locale,
             "key": stripe_pk,
         }
-    stripe = new_session(proxy)
-    stripe.headers.update(
-        {
-            "User-Agent": req.user_agent.strip() or DEFAULT_USER_AGENT,
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-    )
-    set_proxy_url(stripe, proxy)
     stripe_js_id = str(uuid.uuid4())
     body = {
         "browser_locale": browser_locale,
@@ -934,6 +924,20 @@ def stripe_init(cs_id: str, req: LongLinkRequest, proxy_override: str = "", chec
     return payload
 
 
+def stripe_init(cs_id: str, req: LongLinkRequest, proxy_override: str = "", checkout: dict[str, Any] | None = None) -> dict[str, Any]:
+    stripe_pk = stripe_key_for_request(req, checkout)
+    proxy = proxy_override or checkout_stage_proxy(req)
+    stripe = new_session(proxy)
+    stripe.headers.update(
+        {
+            "User-Agent": req.user_agent.strip() or DEFAULT_USER_AGENT,
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+    )
+    set_proxy_url(stripe, proxy)
+    return _stripe_init_request(stripe, cs_id, req, stripe_pk)
+
+
 def to_openai_pay_url(stripe_hosted_url: str) -> str:
     url = str(stripe_hosted_url or "").strip()
     if not url:
@@ -952,6 +956,58 @@ def processor_entity_for_country(country: str, processor_entity: str = "") -> st
     if entity:
         return entity
     return "openai_llc" if str(country or "").upper() == "US" else "openai_ie"
+
+
+def deep_find_first_string(value: Any, predicate: Any) -> str:
+    if isinstance(value, dict):
+        for item in value.values():
+            found = deep_find_first_string(item, predicate)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = deep_find_first_string(item, predicate)
+            if found:
+                return found
+    elif isinstance(value, str):
+        text = value.strip()
+        try:
+            if text and predicate(text):
+                return text
+        except Exception:
+            return ""
+    return ""
+
+
+def deep_find_key_string(value: Any, wanted_keys: tuple[str, ...], predicate: Any | None = None) -> str:
+    lowered = {item.lower() for item in wanted_keys}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key or "").strip().lower()
+            if key_text in lowered and isinstance(item, str):
+                text = item.strip()
+                if text and (predicate is None or predicate(text)):
+                    return text
+            found = deep_find_key_string(item, wanted_keys, predicate)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = deep_find_key_string(item, wanted_keys, predicate)
+            if found:
+                return found
+    return ""
+
+
+def extract_elements_session_id(init_payload: dict[str, Any]) -> str:
+    by_key = deep_find_key_string(
+        init_payload,
+        ("elements_session_id", "elementsSessionId", "session_id", "sessionId"),
+        lambda text: text.startswith("elements_session_"),
+    )
+    if by_key:
+        return by_key
+    return deep_find_first_string(init_payload, lambda text: text.startswith("elements_session_"))
 
 
 def chatgpt_success_return_url(cs_id: str, country: str, processor_entity: str = "") -> str:
@@ -1017,6 +1073,7 @@ def expected_amount(init_payload: Any) -> str:
 def stripe_context(cs_id: str, init_payload: dict[str, Any], req: LongLinkRequest) -> dict[str, Any]:
     _, elements_locale = locale_parts(req.payment_locale)
     amount_str = expected_amount(init_payload) or "0"
+    elements_session_id = extract_elements_session_id(init_payload) or f"elements_session_{uuid.uuid4().hex[:11]}"
     # AU 含 10% GST：stripe_init 返回的 invoice 金额通常不含税，创建 PM 后 Stripe 重新计算 upcoming_invoice 会加上 GST
     if str(req.payment_method_country or "").upper() == "AU" or str(req.billing_country or "").upper() == "AU":
         try:
@@ -1025,7 +1082,7 @@ def stripe_context(cs_id: str, init_payload: dict[str, Any], req: LongLinkReques
             pass
     return {
         "stripe_js_id": str(init_payload.get("_stripe_js_id") or uuid.uuid4()),
-        "elements_session_id": f"elements_session_{uuid.uuid4().hex[:11]}",
+        "elements_session_id": elements_session_id,
         "elements_session_config_id": str(init_payload.get("config_id") or uuid.uuid4()),
         "config_id": init_payload.get("config_id") or "",
         "init_checksum": init_payload.get("init_checksum") or "",
@@ -1491,6 +1548,7 @@ def stripe_payment_page_redirect_url(
         emit("redirect", "confirm 未返回跳转，复用 Stripe session 上下文轮询 payment page。")
     poll_count = 0
     failed_grace = 3
+    refreshed_active_session = False
     while time.time() < deadline:
         poll_count += 1
         if emit:
@@ -1525,6 +1583,41 @@ def stripe_payment_page_redirect_url(
                 emit("redirect", "仍在等待 PayPal BA approve 链。")
         else:
             last_err = f"http {response.status_code}: {response.text[:120]}"
+            if response.status_code == 400:
+                try:
+                    error = (response.json() or {}).get("error") or {}
+                except Exception:
+                    error = {}
+                error_code = str(error.get("code") or "").strip()
+                if error_code == "checkout_not_active_session" and not refreshed_active_session:
+                    refreshed_active_session = True
+                    if emit:
+                        emit("redirect", "Stripe active session 已失效，正在刷新 payment page session。")
+                    try:
+                        refreshed_init = _stripe_init_request(stripe, cs_id, req, stripe_pk)
+                        refreshed_ctx = stripe_context(cs_id, refreshed_init, req)
+                        ctx.update(
+                            {
+                                "stripe_js_id": refreshed_ctx["stripe_js_id"],
+                                "elements_session_id": refreshed_ctx["elements_session_id"],
+                                "elements_session_config_id": refreshed_ctx["elements_session_config_id"],
+                                "config_id": refreshed_ctx["config_id"],
+                                "init_checksum": refreshed_ctx["init_checksum"],
+                                "currency": refreshed_ctx["currency"],
+                                "checkout_amount": refreshed_ctx["checkout_amount"],
+                                "locale": refreshed_ctx["locale"],
+                            }
+                        )
+                        params["elements_session_client[session_id]"] = ctx["elements_session_id"]
+                        params["elements_session_client[stripe_js_id]"] = ctx["stripe_js_id"]
+                        params["elements_session_client[locale]"] = str(ctx.get("locale") or locale_parts(req.payment_locale)[1])
+                        if emit:
+                            emit("redirect", "Stripe active session 已刷新，继续轮询 BA 链。")
+                        time.sleep(1)
+                        continue
+                    except Exception as exc:
+                        if emit:
+                            emit("redirect", f"刷新 Stripe active session 失败：{short_error(str(exc), 160)}")
             if emit and (poll_count == 1 or poll_count % 5 == 0):
                 emit("redirect", f"Stripe 轮询暂未成功：HTTP {response.status_code}。")
         time.sleep(1)
@@ -1670,6 +1763,21 @@ def redirect_url_after_confirm(
     req: LongLinkRequest,
     emit: Any | None = None,
 ) -> str:
+    def approve_with_existing_or_retry() -> Any:
+        try:
+            chatgpt_approve(chatgpt, cs_id, checkout)
+            if emit:
+                emit("approve", "ChatGPT approve 请求成功（复用 checkout session）。")
+            return chatgpt
+        except HTTPException as exc:
+            if is_retryable_provider_http_exception(exc):
+                return chatgpt_approve_with_retry(req, cs_id, checkout, emit=emit)
+            raise
+        except Exception as exc:
+            if is_retryable_network_error(exc):
+                return chatgpt_approve_with_retry(req, cs_id, checkout, emit=emit)
+            raise
+
     if emit:
         emit("redirect", "正在从 confirm payload 提取 PayPal 跳转。")
     redirect_url = extract_redirect_to_url(confirm_payload)
@@ -1681,12 +1789,7 @@ def redirect_url_after_confirm(
     if submission.get("state") == "requires_approval":
         if emit:
             emit("approve", "Stripe 要求 ChatGPT approve，正在使用 JP 代理提交 approve。")
-        try:
-            chatgpt_approve(chatgpt, cs_id, checkout)
-            if emit:
-                emit("approve", "ChatGPT approve 请求成功（复用 checkout session）。")
-        except Exception:
-            chatgpt = chatgpt_approve_with_retry(req, cs_id, checkout, emit=emit)
+        chatgpt = approve_with_existing_or_retry()
         return stripe_payment_page_redirect_url(stripe, cs_id, stripe_pk, req, ctx, timeout_seconds=45, emit=emit)
     if submission.get("state") == "failed":
         diagnostics = stripe_payload_diagnostics(confirm_payload, ctx)
@@ -1698,7 +1801,7 @@ def redirect_url_after_confirm(
     except StripeRequiresApproval:
         if emit:
             emit("approve", "轮询 payment page 发现 requires_approval，正在提交 ChatGPT approve。")
-        chatgpt = chatgpt_approve_with_retry(req, cs_id, checkout, emit=emit)
+        chatgpt = approve_with_existing_or_retry()
         if emit:
             emit("approve", "ChatGPT approve 已通过，继续轮询 PayPal BA approve 跳转。")
         return stripe_payment_page_redirect_url(stripe, cs_id, stripe_pk, req, ctx, timeout_seconds=45, emit=emit)
