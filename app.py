@@ -347,9 +347,19 @@ def is_retryable_provider_http_exception(exc: HTTPException) -> bool:
 
 
 def provider_stage_proxy(req: LongLinkRequest) -> str:
-    explicit = str(req.us_proxy or "").strip()
-    if explicit:
-        return normalize_proxy_url(explicit)
+    """Provider-stage proxy.  Falls back to JP proxy when no US/AU proxy given
+    so the entire flow runs on a single JP proxy, matching the known-working
+    single-proxy extraction pattern."""
+    us = str(req.us_proxy or "").strip()
+    au = str(req.au_proxy or "").strip()
+    if au:
+        return normalize_proxy_url(au)
+    if us:
+        return normalize_proxy_url(us)
+    # Single-proxy fallback: reuse JP for everything
+    jp = checkout_stage_proxy(req)
+    if jp:
+        return jp
     return normalize_proxy_url(PROVIDER_STAGE_PROXY)
 
 
@@ -462,13 +472,14 @@ def _provider_proxy_options(req: LongLinkRequest) -> list[tuple[str, str, str]]:
     opts: list[tuple[str, str, str]] = []
     us = str(req.us_proxy or "").strip()
     au = str(req.au_proxy or "").strip()
+    jp = checkout_stage_proxy(req)
     if us:
         opts.append(("provider US", normalize_proxy_url(us), "US"))
     if au:
         opts.append(("provider AU", normalize_proxy_url(au), "AU"))
     if not opts:
-        fallback = provider_stage_proxy(req)
-        opts.append(("provider US", fallback, "US"))
+        # Single JP proxy mode — provider reuses JP
+        opts.append(("provider JP", jp, "JP"))
     return opts
 
 
