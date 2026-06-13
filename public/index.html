@@ -825,6 +825,7 @@
                 <div class="actions">
                   <div class="action-buttons">
                     <button id="generate">提取 PP 链</button>
+                    <button id="diagnoseCheckout" class="secondary" type="button">诊断 Checkout</button>
                     <button id="checkProxy" class="secondary" type="button">检测代理</button>
                     <button id="saveProxy" class="secondary" type="button">保存代理</button>
                     <button id="clearProxy" class="secondary" type="button">清除保存</button>
@@ -913,6 +914,7 @@
     <script>
       const $ = (id) => document.getElementById(id);
       const generateButton = $("generate");
+      const diagnoseCheckoutButton = $("diagnoseCheckout");
       const copyButton = $("copy");
       const openLink = $("openLink");
       const statusLine = $("status");
@@ -1085,6 +1087,44 @@
         setStatus(data.ok ? message || "代理检测完成。" : "代理检测未通过，请看下方 JP/US 出口结果。", !data.ok);
         if (!data.ok) throw new Error("代理检测未通过，请看下方 JP/US 出口结果。");
         return data;
+      }
+
+      async function diagnoseCheckout() {
+        const accessToken = readAccessTokenInput();
+        if (!accessToken) {
+          setStatus("请先填写 Access Token。", true);
+          return;
+        }
+        diagnoseCheckoutButton.disabled = true;
+        setStatus("正在单独诊断 checkout 接口...");
+        addLog("checkout 诊断：开始", false, "checkout");
+        try {
+          const data = await fetchJsonWithRetry("/api/diagnose-checkout", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestPayload(accessToken)),
+          }, 2);
+          if (data.jp_ip || data.jp_country) {
+            addLog(`checkout JP：${data.jp_ip || "未知 IP"} / ${data.jp_country || "未知"}`, false, "checkout", null, {
+              level: "INFO",
+              comboText: "–",
+              statusText: "成功",
+            });
+          }
+          if (data.ok) {
+            addLog(`checkout 诊断成功：${data.checkout_session_id} / ${data.billing_country} / ${data.currency}`, false, "checkout");
+            setStatus(`checkout 诊断成功：已拿到 ${data.checkout_session_id}`, false);
+          } else {
+            addLog(`checkout 诊断失败：${data.detail || "未知错误"}`, true, "checkout");
+            setStatus(`checkout 诊断失败：${data.detail || "未知错误"}`, true);
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          addLog(`checkout 诊断失败：${message}`, true, "checkout");
+          setStatus(message, true);
+        } finally {
+          diagnoseCheckoutButton.disabled = false;
+        }
       }
 
       function loadProxy() {
@@ -1486,6 +1526,7 @@
           $("checkProxy").disabled = false;
         }
       });
+      diagnoseCheckoutButton.addEventListener("click", diagnoseCheckout);
       $("saveProxy").addEventListener("click", () => {
         localStorage.setItem("openai_pay_long_link_jp_proxy", $("jpProxy").value.trim());
         localStorage.setItem("openai_pay_long_link_us_proxy", $("usProxy").value.trim());

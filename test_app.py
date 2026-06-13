@@ -141,6 +141,63 @@ class TestProxyCheck:
         assert "results" in data
 
 
+class TestCheckoutDiagnoseEndpoint:
+    def test_returns_success_payload_when_checkout_works(self):
+        fake_probe = app_module.ProxyProbeResult(
+            ok=True,
+            label="checkout JP",
+            proxy="http://jp",
+            ip="1.2.3.4",
+            country="Japan",
+            country_code="JP",
+            error="",
+        )
+        fake_checkout = {
+            "cs_id": "cs_test_123",
+            "processor_entity": "openai_llc",
+            "stripe_publishable_key": "pk_test",
+            "billing_country": "US",
+            "currency": "USD",
+            "checkout_url": "",
+        }
+        with patch.object(app_module, "probe_proxy", return_value=fake_probe), patch.object(
+            app_module, "build_chatgpt_session", return_value=object()
+        ), patch.object(app_module, "create_checkout", return_value=fake_checkout):
+            response = client.post("/api/diagnose-checkout", json={"accessToken": "fake-token", "jp_proxy": "http://jp"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is True
+        assert data["checkout_session_id"] == "cs_test_123"
+        assert data["jp_country"] == "JP"
+
+    def test_returns_failure_payload_when_checkout_returns_html(self):
+        fake_probe = app_module.ProxyProbeResult(
+            ok=True,
+            label="checkout JP",
+            proxy="http://jp",
+            ip="1.2.3.4",
+            country="Japan",
+            country_code="JP",
+            error="",
+        )
+        with patch.object(app_module, "probe_proxy", return_value=fake_probe), patch.object(
+            app_module, "build_chatgpt_session", return_value=object()
+        ), patch.object(
+            app_module,
+            "create_checkout",
+            side_effect=app_module.HTTPException(
+                status_code=403,
+                detail="checkout create failed: status=403, content_type=text/html, title=Just a moment..., body_type=html",
+            ),
+        ):
+            response = client.post("/api/diagnose-checkout", json={"accessToken": "fake-token", "jp_proxy": "http://jp"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is False
+        assert data["status_code"] == 403
+        assert "body_type=html" in data["detail"]
+
+
 # ───────────────────────────  URL / network helpers  ───────────────────────────
 
 
@@ -651,6 +708,14 @@ class TestFailureClassification:
     def test_classifies_confirm_error(self):
         detail = 'stripe confirm failed: { "error": { "code": "checkout_confirm_error", "type": "invalid_request_error" } }'
         assert classify_combo_failure(detail) == "confirm_invalid_request"
+
+    def test_classifies_checkout_html_interstitial(self):
+        detail = "checkout create failed: status=403, content_type=text/html, title=Just a moment..., body_type=html, body=<html>"
+        assert classify_combo_failure(detail) == "checkout_html_interstitial"
+
+    def test_classifies_checkout_spa_fallback(self):
+        detail = "checkout create failed: status=200, content_type=text/html, title=ChatGPT, page_kind=spa_fallback, body_type=html, body=<html>"
+        assert classify_combo_failure(detail) == "checkout_spa_fallback"
 
     def test_classifies_submission_decline(self):
         detail = "stripe submission failed: submission_code=checkout_approval_payment_failure_with_payment_error, reason=generic_decline"

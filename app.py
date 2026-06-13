@@ -206,6 +206,18 @@ class ProxyCheckResponse(BaseModel):
     results: list[ProxyProbeResult]
 
 
+class CheckoutDiagnosticResponse(BaseModel):
+    ok: bool
+    billing_country: str = ""
+    currency: str = ""
+    checkout_session_id: str = ""
+    processor_entity: str = ""
+    jp_ip: str = ""
+    jp_country: str = ""
+    detail: str = ""
+    status_code: int = 0
+
+
 def encode_socks_password(proxy: str) -> str:
     proxy = str(proxy or "").strip()
     if not proxy or not proxy.lower().startswith("socks"):
@@ -796,13 +808,17 @@ def create_checkout(req: LongLinkRequest, chatgpt_session: Any | None = None) ->
         timeout=CHATGPT_TIMEOUT,
     )
     if response.status_code >= 400:
-        body_text = response.text[:500] if response.text else ""
         raise HTTPException(
             status_code=response.status_code,
-            detail=f"checkout create failed: {body_text}",
+            detail=f"checkout create failed: {response_diagnostic_summary(response, body_limit=320)}",
         )
-
-    data = response.json() or {}
+    try:
+        data = response.json() or {}
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail=f"checkout create non-json response: {response_diagnostic_summary(response, body_limit=320)}",
+        )
     cs_id = data.get("checkout_session_id") or data.get("session_id") or data.get("id")
     if not cs_id or not str(cs_id).startswith("cs_"):
         raise HTTPException(status_code=502, detail=f"checkout response missing cs_id: {data}")
@@ -839,8 +855,10 @@ def create_checkout_with_retry(req: LongLinkRequest, emit: Any | None = None) ->
             checkout = create_checkout(attempt_req, chatgpt)
             return attempt_req, chatgpt, checkout
         except HTTPException as exc:
-            # 403 返回 HTML 通常是 Cloudflare 临时拦截，应重试
-            if exc.status_code == 403 and "<html" in str(exc.detail or ""):
+            detail_text = str(exc.detail or "")
+            looks_html_interstitial = "body_type=html" in detail_text or "<html" in detail_text.lower()
+            # HTML 拦截页/挑战页通常值得换 JP session 再试；401/400 类明确失败则直接抛出
+            if looks_html_interstitial and exc.status_code in (403, 429, 500, 502, 503):
                 last_error = str(exc.detail or exc)
                 if emit:
                     emit("checkout", f"checkout 第 {attempt} 次被 Cloudflare 拦截，正在更换 JP session")
@@ -1631,6 +1649,24 @@ def html_title(text: str) -> str:
     return re.sub(r"\s+", " ", match.group(1)).strip()[:160]
 
 
+def classify_html_page(text: str, headers: Any | None = None) -> str:
+    html = str(text or "")
+    lowered = html.lower()
+    title = html_title(html).lower()
+    location = str((headers or {}).get("location") or "").lower()
+    if "just a moment" in title or "cf-chl-" in lowered or "challenge-platform" in lowered:
+        return "cloudflare_challenge"
+    if "/auth/login" in location or "sign in" in title or "login" in title:
+        return "login_page"
+    if "__next_data__" in lowered or "next-route-announcer" in lowered or "<div id=\"__next\"" in lowered:
+        return "spa_fallback"
+    if "access denied" in title or "forbidden" in title:
+        return "access_denied"
+    if "<html" in lowered or "<head" in lowered:
+        return "html_interstitial"
+    return ""
+
+
 def response_diagnostic_summary(response: Any, body_limit: int = 240) -> str:
     status = int(getattr(response, "status_code", 0) or 0)
     headers = getattr(response, "headers", {}) or {}
@@ -1639,6 +1675,7 @@ def response_diagnostic_summary(response: Any, body_limit: int = 240) -> str:
     text = str(getattr(response, "text", "") or "")
     title = html_title(text)
     looks_html = "<html" in text.lower() or "<head" in text.lower() or content_type.lower().startswith("text/html")
+    page_kind = classify_html_page(text, headers) if looks_html else ""
     parts = [f"status={status}"]
     if content_type:
         parts.append(f"content_type={content_type}")
@@ -1646,6 +1683,8 @@ def response_diagnostic_summary(response: Any, body_limit: int = 240) -> str:
         parts.append(f"location={short_error(location, 120)}")
     if title:
         parts.append(f"title={short_error(title, 80)}")
+    if page_kind:
+        parts.append(f"page_kind={page_kind}")
     if looks_html:
         parts.append("body_type=html")
     snippet = short_error(re.sub(r"\s+", " ", text), body_limit)
@@ -2023,6 +2062,46 @@ def check_proxy(req: ProxyCheckRequest) -> ProxyCheckResponse:
 @app.post("/api/long-link", response_model=LongLinkResponse)
 def generate_long_link(req: LongLinkRequest) -> LongLinkResponse:
     return generate_long_link_payload(req)
+
+
+@app.post("/api/diagnose-checkout", response_model=CheckoutDiagnosticResponse)
+def diagnose_checkout(req: LongLinkRequest) -> CheckoutDiagnosticResponse:
+    normalized_req = req.model_copy(update={"billing_country": effective_country(req)})
+    probe = probe_proxy("checkout JP", checkout_stage_proxy(normalized_req), "JP", required=True)
+    if not probe.ok:
+        return CheckoutDiagnosticResponse(
+            ok=False,
+            billing_country=effective_country(normalized_req),
+            currency=currency_for_country(effective_country(normalized_req)),
+            jp_ip=probe.ip,
+            jp_country=probe.country_code or probe.country,
+            detail=probe.error or "checkout JP 代理检测失败",
+            status_code=400,
+        )
+    try:
+        chatgpt = build_chatgpt_session(normalized_req)
+        checkout = create_checkout(normalized_req, chatgpt)
+        return CheckoutDiagnosticResponse(
+            ok=True,
+            billing_country=checkout["billing_country"],
+            currency=checkout["currency"],
+            checkout_session_id=checkout["cs_id"],
+            processor_entity=checkout["processor_entity"],
+            jp_ip=probe.ip,
+            jp_country=probe.country_code or probe.country,
+            detail="checkout 接口返回 JSON，已拿到有效 cs_id",
+            status_code=200,
+        )
+    except HTTPException as exc:
+        return CheckoutDiagnosticResponse(
+            ok=False,
+            billing_country=effective_country(normalized_req),
+            currency=currency_for_country(effective_country(normalized_req)),
+            jp_ip=probe.ip,
+            jp_country=probe.country_code or probe.country,
+            detail=str(exc.detail or exc),
+            status_code=exc.status_code,
+        )
 
 
 def new_run_id() -> str:
@@ -2646,6 +2725,14 @@ def emit_combo_result(
 
 def classify_combo_failure(detail: str) -> str:
     text = str(detail or "").lower()
+    if "page_kind=spa_fallback" in text and "checkout create" in text:
+        return "checkout_spa_fallback"
+    if "page_kind=cloudflare_challenge" in text and "checkout create" in text:
+        return "checkout_cloudflare"
+    if "checkout create non-json response" in text:
+        return "checkout_html_interstitial"
+    if "checkout create failed" in text and "body_type=html" in text:
+        return "checkout_html_interstitial"
     if "checkout_confirm_error" in text or "confirm failed" in text:
         return "confirm_invalid_request"
     if "checkout_approval_payment_failure_with_payment_error" in text or "generic_decline" in text:
