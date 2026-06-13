@@ -12,6 +12,7 @@ import app as app_module
 from app import (
     app,
     billing_for_country,
+    classify_combo_failure,
     collect_urls,
     combo_attempt_order,
     combo_name,
@@ -39,6 +40,7 @@ from app import (
     short_error,
     stripe_checkout_long_url,
     stripe_payload_diagnostics,
+    summarize_failure_classes,
     to_openai_pay_url,
 )
 
@@ -642,6 +644,20 @@ class TestConfiguredBillingCombos:
         assert combos == [("US", "AU"), ("US", "US"), ("DE", "AU"), ("DE", "US")]
 
 
+class TestFailureClassification:
+    def test_classifies_confirm_error(self):
+        detail = 'stripe confirm failed: { "error": { "code": "checkout_confirm_error", "type": "invalid_request_error" } }'
+        assert classify_combo_failure(detail) == "confirm_invalid_request"
+
+    def test_classifies_submission_decline(self):
+        detail = "stripe submission failed: submission_code=checkout_approval_payment_failure_with_payment_error, reason=generic_decline"
+        assert classify_combo_failure(detail) == "submission_generic_decline"
+
+    def test_summarizes_failure_classes(self):
+        result = summarize_failure_classes({"submission_generic_decline": 3, "confirm_invalid_request": 1})
+        assert result == "submission_generic_decline x3；confirm_invalid_request x1"
+
+
 class TestComboName:
     def test_combo_format(self):
         assert combo_name("US", "DE") == "US+DE"
@@ -667,6 +683,27 @@ class TestCtfMockMode:
         assert data["billing_country"] in {"DE", "US"}
         assert data["payment_method_country"] == "AU"
         assert data["provider_redirect_url"].startswith("https://www.paypal.com/agreements/approve?ba_token=BA-MOCK-")
+
+    def test_diagnostic_mode_limits_attempts(self):
+        body = {
+            "accessToken": "mock-token",
+            "jp_proxy": "mock://jp",
+            "us_proxy": "mock://us",
+            "au_proxy": "mock://au",
+            "billing_countries": ["US", "DE"],
+            "payment_method_countries": ["DE", "AU"],
+            "provider_proxy_countries": ["US", "AU"],
+            "diagnostic_mode": True,
+            "max_combos": 1,
+        }
+        with patch.object(app_module, "CTF_MOCK_MODE", True):
+            response = client.post("/api/long-link/start", json=body)
+            assert response.status_code == 200
+            run_id = response.json()["run_id"]
+            events = client.get(f"/api/long-link/events/{run_id}?cursor=0")
+        assert events.status_code == 200
+        combo_events = [item for item in events.json()["events"] if item.get("step") == "combo_result"]
+        assert len(combo_events) <= 1
 
 
 # ───────────────────────────  error / logging helpers  ───────────────────────────

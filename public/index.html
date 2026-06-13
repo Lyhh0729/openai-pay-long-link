@@ -791,6 +791,15 @@
                     </select>
                     <div class="token-meta">请求语言/地区设置</div>
                   </div>
+                  <div class="field">
+                    <label class="check-label"><input id="diagnosticMode" type="checkbox"> 单组合诊断模式</label>
+                    <div class="token-meta">开启后只跑少量组合，并在重复失败类型时提前停止</div>
+                  </div>
+                  <div class="field">
+                    <label for="maxCombos">最大尝试组合数</label>
+                    <input id="maxCombos" type="number" min="1" max="18" value="1" />
+                    <div class="token-meta">仅在诊断模式下生效，建议先从 1 开始</div>
+                  </div>
                 </div>
 
                 <div style="min-height: 126px"></div>
@@ -1018,6 +1027,8 @@
           payment_method_countries: checkedValues("paymentMethodCountries"),
           provider_proxy_countries: checkedValues("providerProxyCountries"),
           payment_locale: $("paymentLocale").value,
+          diagnostic_mode: $("diagnosticMode").checked,
+          max_combos: Number($("maxCombos").value || 0),
           stripe_publishable_key: $("stripeKey").value.trim(),
           device_id: $("deviceId").value.trim(),
           user_agent: $("userAgent").value.trim(),
@@ -1130,6 +1141,19 @@
           if (parts.length >= 3) break;
         }
         return parts;
+      }
+
+      function summarizeFailureClasses(rows) {
+        const counts = new Map();
+        for (const row of rows || []) {
+          if (row.status !== "失败") continue;
+          const key = String(row.failure_class || "").trim();
+          if (!key) continue;
+          counts.set(key, (counts.get(key) || 0) + 1);
+        }
+        return Array.from(counts.entries())
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .map(([name, count]) => `${name} x${count}`);
       }
 
       function addLog(message, isError = false, step = "", event = null, options = {}) {
@@ -1272,7 +1296,10 @@
         for (const row of comboRows) {
           const ok = row.status === "成功";
           const detail = compactFailureDetail(row.detail);
-          const message = !ok && detail ? `${row.message || "组合测试"} | 失败原因：${detail}` : (row.message || "组合测试");
+          const failureClass = String(row.failure_class || "").trim();
+          const detailSuffix = !ok && detail ? ` | 失败原因：${detail}` : "";
+          const classSuffix = !ok && failureClass ? ` | 分类：${failureClass}` : "";
+          const message = `${row.message || "组合测试"}${detailSuffix}${classSuffix}`;
           addLog(message, !ok, "combo_result", row, {
             level: ok ? "INFO" : "WARN",
             comboText: String(row.combo_index || "–"),
@@ -1286,8 +1313,10 @@
         const success = comboRows.filter((row) => row.status === "成功").length;
         const failure = comboRows.filter((row) => row.status === "失败").length;
         const failureReasons = summarizeFailureDetails(comboRows);
-        const suffix = failureReasons.length ? ` | 失败原因摘要：${failureReasons.join("；")}` : "";
-        addLog(`运行完成：成功 ${success}，失败 ${failure}，总计 ${success + failure}${suffix}`, false, "summary", { elapsed_ms: totalElapsedMs }, {
+        const failureClasses = summarizeFailureClasses(comboRows);
+        const reasonSuffix = failureReasons.length ? ` | 失败原因摘要：${failureReasons.join("；")}` : "";
+        const classSuffix = failureClasses.length ? ` | 失败分类：${failureClasses.join("；")}` : "";
+        addLog(`运行完成：成功 ${success}，失败 ${failure}，总计 ${success + failure}${reasonSuffix}${classSuffix}`, false, "summary", { elapsed_ms: totalElapsedMs }, {
           level: "INFO",
           comboText: "–",
           statusText: "–",
@@ -1415,10 +1444,10 @@
 
       // ── Route preset buttons ──
       const ROUTE_PRESETS = {
-        online:  { billing: ["US"], pm: ["AU"], provider: ["US"], label: "线上成功 JP+US+AU" },
-        auto:    { billing: ["US","DE","AU"], pm: ["DE","AU"], provider: ["US","AU"], label: "自动全组合" },
-        fixed:   { billing: ["US"], pm: ["US"], provider: ["US"], label: "固定 US+US" },
-        fallback:{ billing: ["DE"], pm: ["DE"], provider: ["US"], label: "备用 DE+DE" },
+        online:  { billing: ["US"], pm: ["AU"], provider: ["US"], diagnostic: true, maxCombos: 1, label: "线上成功 JP+US+AU" },
+        auto:    { billing: ["US","DE","AU"], pm: ["DE","AU"], provider: ["US","AU"], diagnostic: false, maxCombos: 18, label: "自动全组合" },
+        fixed:   { billing: ["US"], pm: ["US"], provider: ["US"], diagnostic: true, maxCombos: 1, label: "固定 US+US" },
+        fallback:{ billing: ["DE"], pm: ["DE"], provider: ["US"], diagnostic: true, maxCombos: 1, label: "备用 DE+DE" },
       };
 
       function applyRoute(routeKey) {
@@ -1427,6 +1456,8 @@
         setChecks("billingCountries", preset.billing);
         setChecks("paymentMethodCountries", preset.pm);
         setChecks("providerProxyCountries", preset.provider);
+        $("diagnosticMode").checked = Boolean(preset.diagnostic);
+        $("maxCombos").value = String(preset.maxCombos || 1);
         document.querySelectorAll(".route-btn").forEach(b => b.classList.remove("active"));
         document.querySelector(`.route-btn[data-route="${routeKey}"]`)?.classList.add("active");
       }
@@ -1441,6 +1472,7 @@
         btn.addEventListener("click", () => applyRoute(btn.dataset.route));
       });
 
+      applyRoute("online");
       loadProxy();
       $("accessToken").addEventListener("input", updateTokenMeta);
       $("checkProxy").addEventListener("click", async () => {

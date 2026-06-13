@@ -159,6 +159,8 @@ class LongLinkRequest(BaseModel):
     provider_proxy_country: str = ""
     checkout_ui_mode: str = "custom"
     payment_locale: str = "en"
+    diagnostic_mode: bool = False
+    max_combos: int = 0
     device_id: str = ""
     user_agent: str = ""
 
@@ -2249,14 +2251,21 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
     for cc, pm in billing_combos:
         for label, proxy_val, expected_country in proxy_opts:
             combos.append((cc, pm, (label, proxy_val, expected_country)))
+    if req.diagnostic_mode:
+        limit = max(1, min(len(combos), int(req.max_combos or 1)))
+        combos = combos[:limit]
     failures: list[str] = []
     combo_results: list[dict[str, str]] = []
+    failure_class_counts: dict[str, int] = {}
     log("start", f"开始执行 PP 链提取流程，{len(combos)} 种组合（{len(billing_combos)} 账单 × {len(proxy_opts)} 代理）。")
+    if req.diagnostic_mode:
+        log("start", f"诊断模式已启用：仅尝试前 {len(combos)} 组，避免重复空转。")
 
+    early_stop_reason = ""
     for index, (checkout_country, pm_country, (proxy_label, proxy_url, proxy_country)) in enumerate(combos, start=1):
         combo_started_at = time.time()
         combo_label = f"{combo_name(checkout_country, pm_country)}@{proxy_country}"
-        combo_result = {"combo": combo_label, "status": "运行中", "detail": ""}
+        combo_result = {"combo": combo_label, "status": "运行中", "detail": "", "failure_class": ""}
         combo_results.append(combo_result)
         combo_req = req.model_copy(
             update={
@@ -2298,11 +2307,14 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
         except HTTPException as exc:
             detail = str(exc.detail)
             short_detail = short_error(detail)
+            failure_class = classify_combo_failure(detail)
             summary = f"{combo_label}: {short_detail}"
             failures.append(summary)
             combo_result["status"] = "失败"
             combo_result["detail"] = summarize_combo_failure(detail)
+            combo_result["failure_class"] = failure_class
             combo_result["elapsed_ms"] = str(int((time.time() - combo_started_at) * 1000))
+            failure_class_counts[failure_class] = failure_class_counts.get(failure_class, 0) + 1
             emit_combo_result(
                 emit,
                 index,
@@ -2313,9 +2325,14 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
                 "失败",
                 int(combo_result["elapsed_ms"]),
                 combo_result["detail"],
+                failure_class,
             )
             # Always continue to next combo — never stop early
             log("combo", f"组合 {combo_label} 未拿到 BA approve：{short_detail}")
+            if req.diagnostic_mode and failure_class_counts.get(failure_class, 0) >= 2:
+                early_stop_reason = f"诊断模式下失败类型 {failure_class} 已重复 {failure_class_counts[failure_class]} 次"
+                log("combo", f"{early_stop_reason}，提前停止后续组合。")
+                break
             if index < len(combos):
                 next_checkout, next_pm, _next_proxy = combos[index]
                 log("combo", f"自动切换下一个组合：checkout={next_checkout}，PM={next_pm}，proxy={_next_proxy[2]}。")
@@ -2326,11 +2343,14 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
                 log("combo", "跳过异常，尝试下一个组合。")
             detail = f"provider 网络异常: {exc}"
             short_detail = short_error(detail)
+            failure_class = classify_combo_failure(detail)
             summary = f"{combo_label}: {short_detail}"
             failures.append(summary)
             combo_result["status"] = "失败"
             combo_result["detail"] = "provider 网络异常"
+            combo_result["failure_class"] = failure_class
             combo_result["elapsed_ms"] = str(int((time.time() - combo_started_at) * 1000))
+            failure_class_counts[failure_class] = failure_class_counts.get(failure_class, 0) + 1
             emit_combo_result(
                 emit,
                 index,
@@ -2341,15 +2361,26 @@ def generate_long_link_payload(req: LongLinkRequest, emit: Any | None = None) ->
                 "失败",
                 int(combo_result["elapsed_ms"]),
                 combo_result["detail"],
+                failure_class,
             )
             log("combo", f"组合 {combo_label} 网络异常，进入下一个组合：{short_detail}")
+            if req.diagnostic_mode and failure_class_counts.get(failure_class, 0) >= 2:
+                early_stop_reason = f"诊断模式下失败类型 {failure_class} 已重复 {failure_class_counts[failure_class]} 次"
+                log("combo", f"{early_stop_reason}，提前停止后续组合。")
+                break
             if index < len(combos):
                 next_checkout, next_pm, _next_proxy = combos[index]
                 log("combo", f"自动切换下一个组合：checkout={next_checkout}，PM={next_pm}，proxy={_next_proxy[2]}。")
 
     last_detail = failures[-1] if failures else "没有可用组合"
     log("summary", format_combo_results(combo_results))
-    raise HTTPException(status_code=502, detail=f"所有组合均未提取到 PayPal BA approve 链；{'; '.join(failures) or last_detail}")
+    class_summary = summarize_failure_classes(failure_class_counts)
+    stop_suffix = f"；{early_stop_reason}" if early_stop_reason else ""
+    class_suffix = f"；失败分类：{class_summary}" if class_summary else ""
+    raise HTTPException(
+        status_code=502,
+        detail=f"所有组合均未提取到 PayPal BA approve 链；{'; '.join(failures) or last_detail}{class_suffix}{stop_suffix}",
+    )
 
 
 def combo_name(checkout_country: str, pm_country: str) -> str:
@@ -2382,6 +2413,7 @@ def emit_combo_result(
     status: str,
     elapsed_ms: int,
     detail: str = "",
+    failure_class: str = "",
 ) -> None:
     if not emit:
         return
@@ -2405,8 +2437,31 @@ def emit_combo_result(
         provider_proxy_country=provider_country,
         status=status_text,
         detail=detail,
+        failure_class=failure_class,
         combo_elapsed_ms=elapsed_ms,
     )
+
+
+def classify_combo_failure(detail: str) -> str:
+    text = str(detail or "").lower()
+    if "checkout_confirm_error" in text or "confirm failed" in text:
+        return "confirm_invalid_request"
+    if "checkout_approval_payment_failure_with_payment_error" in text or "generic_decline" in text:
+        return "submission_generic_decline"
+    if "chatgpt approve" in text:
+        return "approve_failed"
+    if "provider 网络异常" in text or "proxy" in text and "不可用" in text:
+        return "network_or_proxy"
+    if "redirect url resolution timeout" in text or "未提取到最终 paypal ba approve 链" in text:
+        return "redirect_not_found"
+    return "unknown"
+
+
+def summarize_failure_classes(counts: dict[str, int]) -> str:
+    if not counts:
+        return ""
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return "；".join(f"{name} x{count}" for name, count in ordered if count > 0)
 
 
 def summarize_combo_failure(detail: str) -> str:
