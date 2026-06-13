@@ -659,6 +659,10 @@ class TestFailureClassification:
         result = summarize_failure_classes({"submission_generic_decline": 3, "confirm_invalid_request": 1})
         assert result == "submission_generic_decline x3；confirm_invalid_request x1"
 
+    def test_classifies_approve_html_interstitial(self):
+        detail = "chatgpt approve failed: status=403, content_type=text/html, title=Just a moment..., body_type=html, body=<html>"
+        assert classify_combo_failure(detail) == "approve_html_interstitial"
+
 
 class TestBillMatchPriority:
     def test_labels_two_bill_match_priority_combos(self):

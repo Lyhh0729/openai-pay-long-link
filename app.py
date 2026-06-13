@@ -1531,6 +1531,36 @@ def stripe_payment_page_redirect_url(
     raise HTTPException(status_code=504, detail=f"redirect url resolution timeout: {last_err}")
 
 
+def html_title(text: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", str(text or ""), flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", match.group(1)).strip()[:160]
+
+
+def response_diagnostic_summary(response: Any, body_limit: int = 240) -> str:
+    status = int(getattr(response, "status_code", 0) or 0)
+    headers = getattr(response, "headers", {}) or {}
+    content_type = str(headers.get("content-type") or "").strip()
+    location = str(headers.get("location") or "").strip()
+    text = str(getattr(response, "text", "") or "")
+    title = html_title(text)
+    looks_html = "<html" in text.lower() or "<head" in text.lower() or content_type.lower().startswith("text/html")
+    parts = [f"status={status}"]
+    if content_type:
+        parts.append(f"content_type={content_type}")
+    if location:
+        parts.append(f"location={short_error(location, 120)}")
+    if title:
+        parts.append(f"title={short_error(title, 80)}")
+    if looks_html:
+        parts.append("body_type=html")
+    snippet = short_error(re.sub(r"\s+", " ", text), body_limit)
+    if snippet:
+        parts.append(f"body={snippet}")
+    return ", ".join(parts)
+
+
 def chatgpt_approve(chatgpt: Any, cs_id: str, checkout: dict[str, Any]) -> None:
     if CTF_MOCK_MODE:
         return
@@ -1560,13 +1590,26 @@ def chatgpt_approve(chatgpt: Any, cs_id: str, checkout: dict[str, Any]) -> None:
         timeout=CHATGPT_TIMEOUT,
     )
     if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=f"chatgpt approve failed: {response.text[:500]}")
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=f"chatgpt approve failed: {response_diagnostic_summary(response, body_limit=320)}",
+        )
     try:
-        result = (response.json() or {}).get("result")
+        payload = response.json() or {}
+        result = payload.get("result")
     except Exception:
         result = ""
+        payload = None
+    if payload is None:
+        raise HTTPException(status_code=502, detail=f"chatgpt approve non-json response: {response_diagnostic_summary(response, body_limit=320)}")
     if result != "approved":
-        raise HTTPException(status_code=502, detail=f"chatgpt approve unexpected result: {result!r}")
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"chatgpt approve unexpected result: result={result!r}, "
+                f"{response_diagnostic_summary(response, body_limit=220)}"
+            ),
+        )
 
 
 def chatgpt_approve_with_retry(
@@ -1902,27 +1945,37 @@ def cleanup_run_jobs(now: float | None = None) -> None:
 
 def make_log_event(run_id: str, step: str, message: str, started_at: float, **extra: Any) -> dict[str, Any]:
     now = time.time()
+    raw_message = str(message or "")
+    compacted = compact_log_message(step, raw_message)
+    include_raw = compacted != re.sub(r"\s+", " ", raw_message).strip() and (
+        "诊断：" in raw_message or "Stripe submission 已失败" in raw_message or step in {"redirect", "error"}
+    )
     return {
         "type": "log",
         "run_id": run_id,
         "step": step,
-        "message": compact_log_message(step, message),
+        "message": compacted,
         "ts": now,
         "elapsed_ms": int((now - started_at) * 1000),
+        **({"raw_message": raw_message} if include_raw else {}),
         **extra,
     }
 
 
 def make_error_event(run_id: str, message: str, started_at: float, status_code: int | None = None) -> dict[str, Any]:
     now = time.time()
+    raw_message = str(message or "")
+    compacted = compact_log_message("error", raw_message)
     event: dict[str, Any] = {
         "type": "error",
         "run_id": run_id,
         "step": "error",
-        "message": compact_log_message("error", message),
+        "message": compacted,
         "ts": now,
         "elapsed_ms": int((now - started_at) * 1000),
     }
+    if compacted != re.sub(r"\s+", " ", raw_message).strip():
+        event["raw_message"] = raw_message
     if status_code is not None:
         event["status_code"] = status_code
     return event
@@ -2494,6 +2547,10 @@ def classify_combo_failure(detail: str) -> str:
         return "confirm_invalid_request"
     if "checkout_approval_payment_failure_with_payment_error" in text or "generic_decline" in text:
         return "submission_generic_decline"
+    if "chatgpt approve non-json response" in text:
+        return "approve_html_interstitial"
+    if "body_type=html" in text and "chatgpt approve failed" in text:
+        return "approve_html_interstitial"
     if "chatgpt approve" in text:
         return "approve_failed"
     if "provider 网络异常" in text or "proxy" in text and "不可用" in text:
