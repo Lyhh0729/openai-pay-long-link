@@ -337,6 +337,29 @@
         grid-column: 1 / -1;
       }
 
+      .country-checks {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 22px;
+        min-height: 40px;
+        align-items: center;
+      }
+
+      .check-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        cursor: pointer;
+        font-size: 14px;
+        color: var(--ink);
+      }
+
+      .check-label input[type="checkbox"] {
+        width: auto;
+        min-height: auto;
+        cursor: pointer;
+      }
+
       details {
         border: 1px solid var(--line);
         border-radius: var(--radius);
@@ -696,20 +719,31 @@
                 <hr style="border: 0; border-top: 1px solid var(--line); margin: 24px 0" />
                 <h2 class="panel-title" style="margin-bottom: 22px">运行配置</h2>
                 <div class="grid">
-                  <div class="field">
-                    <label for="billingCountry">地区 (Region)</label>
-                    <select id="billingCountry"></select>
-                    <div class="token-meta">目标 PayPal 账户所在地区</div>
+                  <div class="field full">
+                    <label>Checkout/Billing Countries（多选）</label>
+                    <div id="billingCountries" class="country-checks">
+                      <label class="check-label"><input type="checkbox" value="US" checked> US (USD)</label>
+                      <label class="check-label"><input type="checkbox" value="DE" checked> DE (EUR)</label>
+                      <label class="check-label"><input type="checkbox" value="AU"> AU (AUD)</label>
+                    </div>
+                    <div class="token-meta">订单创建地区，多选后逐一尝试</div>
                   </div>
-                  <div class="field">
-                    <label for="paymentMethodCountry">计费国家/地区 (PM Billing)</label>
-                    <select id="paymentMethodCountry"></select>
-                    <div class="token-meta">PayPal 计费国家/地区</div>
+                  <div class="field full">
+                    <label>Payment Method Countries（多选）</label>
+                    <div id="paymentMethodCountries" class="country-checks">
+                      <label class="check-label"><input type="checkbox" value="DE" checked> DE</label>
+                      <label class="check-label"><input type="checkbox" value="AU" checked> AU</label>
+                      <label class="check-label"><input type="checkbox" value="US"> US</label>
+                    </div>
+                    <div class="token-meta">PayPal 账单资料地区，多选后逐一尝试</div>
                   </div>
-                  <div class="field">
-                    <label for="currency">货币 (Currency)</label>
-                    <input id="currency" readonly />
-                    <div class="token-meta">交易货币类型</div>
+                  <div class="field full">
+                    <label>Provider Proxy Countries（多选）</label>
+                    <div id="providerProxyCountries" class="country-checks">
+                      <label class="check-label"><input type="checkbox" value="US" checked> US Proxy</label>
+                      <label class="check-label"><input type="checkbox" value="AU"> AU Proxy</label>
+                    </div>
+                    <div class="token-meta">Stripe 支付阶段用哪些代理，多选后逐一尝试</div>
                   </div>
                   <div class="field">
                     <label for="jpProxy">日本代理 (JP Proxy)</label>
@@ -854,12 +888,6 @@
     </footer>
 
     <script>
-      const COUNTRIES = [
-        ["AU", "澳大利亚 AU", "AUD"],
-        ["US", "美国 US", "USD"],
-        ["DE", "德国 DE", "EUR"],
-      ];
-
       const $ = (id) => document.getElementById(id);
       const generateButton = $("generate");
       const copyButton = $("copy");
@@ -950,35 +978,9 @@
         }
       }
 
-      function fillCountries() {
-        const select = $("billingCountry");
-        const pmSelect = $("paymentMethodCountry");
-        select.innerHTML = "";
-        pmSelect.innerHTML = "";
-        for (const [code, label] of COUNTRIES) {
-          const option = document.createElement("option");
-          option.value = code;
-          option.textContent = label;
-          if (code === "AU") option.selected = true;
-          select.appendChild(option);
-
-          const pmOption = document.createElement("option");
-          pmOption.value = code;
-          pmOption.textContent = label;
-          if (code === "AU") pmOption.selected = true;
-          pmSelect.appendChild(pmOption);
-        }
-      }
-
-      function updateCurrency() {
-        const selected = COUNTRIES.find(([code]) => code === $("billingCountry").value);
-        $("currency").value = selected ? selected[2] : "USD";
-      }
-
-      function updateRegionMode() {
-        $("providerProxyField").classList.remove("hidden");
-        $("usProxy").disabled = false;
-        updateCurrency();
+      function checkedValues(containerId) {
+        const checks = document.querySelectorAll(`#${containerId} input[type="checkbox"]:checked`);
+        return Array.from(checks).map(cb => cb.value);
       }
 
       function proxyPayload() {
@@ -986,8 +988,9 @@
           jp_proxy: $("jpProxy").value.trim(),
           us_proxy: $("usProxy").value.trim(),
           au_proxy: $("auProxy").value.trim(),
-          billing_country: $("billingCountry").value,
-          payment_method_country: $("paymentMethodCountry").value,
+          billing_countries: checkedValues("billingCountries"),
+          payment_method_countries: checkedValues("paymentMethodCountries"),
+          provider_proxy_countries: checkedValues("providerProxyCountries"),
         };
       }
 
@@ -997,8 +1000,9 @@
           jp_proxy: $("jpProxy").value.trim(),
           us_proxy: $("usProxy").value.trim(),
           au_proxy: $("auProxy").value.trim(),
-          billing_country: $("billingCountry").value,
-          payment_method_country: $("paymentMethodCountry").value,
+          billing_countries: checkedValues("billingCountries"),
+          payment_method_countries: checkedValues("paymentMethodCountries"),
+          provider_proxy_countries: checkedValues("providerProxyCountries"),
           payment_locale: $("paymentLocale").value,
           stripe_publishable_key: $("stripeKey").value.trim(),
           device_id: $("deviceId").value.trim(),
@@ -1371,12 +1375,8 @@
         setStatus("已复制。");
       }
 
-      fillCountries();
-      updateRegionMode();
-      updateCurrency();
       loadProxy();
       $("accessToken").addEventListener("input", updateTokenMeta);
-      $("billingCountry").addEventListener("change", updateRegionMode);
       $("checkProxy").addEventListener("click", async () => {
         $("checkProxy").disabled = true;
         setStatus("正在检测代理...");
